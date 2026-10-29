@@ -3,11 +3,12 @@
 ## GitHub release
 
 ```bash
-git tag -a v0.1.0 -m "v0.1.0"
-git push origin v0.1.0
+git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
+awk -v v=X.Y.Z '$0 ~ "^## "v" " {p=1; next} /^## / {p=0} p' CHANGELOG.md > /tmp/notes.md
+gh release create vX.Y.Z --title vX.Y.Z --notes-file /tmp/notes.md
 ```
 
-The `release` workflow builds `wayland-wallpaperengine@bhuwanjoshi-01.github.io.shell-extension.zip` (`scripts/pack-extension.sh`) and attaches it to the GitHub release.
+Publishing the release triggers the `release` workflow, which builds `wayland-wallpaperengine@bhuwanjoshi-01.github.io.shell-extension.zip` (`scripts/pack-extension.sh`) and attaches it.
 
 ## extensions.gnome.org
 

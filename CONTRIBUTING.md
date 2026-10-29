@@ -33,5 +33,5 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the pieces fit together
 ## Releases
 
 1. Update `CHANGELOG.md` and bump `version` in the extension's `metadata.json`.
-2. Tag `vX.Y.Z` and push the tag. The release workflow attaches the extension zip.
+2. Tag `vX.Y.Z`, push the tag and publish a GitHub release for it (see [docs/PUBLISHING.md](docs/PUBLISHING.md)). The release workflow attaches the extension zip.
 3. Upload the zip to [extensions.gnome.org](https://extensions.gnome.org/upload/) (see [docs/PUBLISHING.md](docs/PUBLISHING.md)).
