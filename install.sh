@@ -93,14 +93,14 @@ fi
 
 # --- runtime packages
 if [[ "$(deps_pm)" != unknown ]]; then
-    missing="$(deps_missing runtime)"
-    if [[ -n "$missing" ]]; then
-        echo "Missing packages: $missing"
+    missing_pkgs="$(deps_missing runtime)"
+    if [[ -n "$missing_pkgs" ]]; then
+        echo "Missing packages: $missing_pkgs"
         if ask "Install them now with sudo?"; then
             # shellcheck disable=SC2086
-            deps_install $missing
+            deps_install $missing_pkgs
         else
-            warn "continuing without: $missing (video wallpapers need mpv, the dialog picker needs zenity)"
+            warn "continuing without: $missing_pkgs (video wallpapers need mpv, the dialog picker needs zenity)"
         fi
     fi
 fi

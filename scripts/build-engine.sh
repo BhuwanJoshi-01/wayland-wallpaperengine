@@ -45,12 +45,12 @@ ask() { # ask <question>: true for yes (default yes, reads the terminal even whe
 if [[ "$(deps_pm)" == unknown ]]; then
     say "unknown distribution: make sure the build dependencies from the linux-wallpaperengine README are installed"
 else
-    missing="$(deps_missing build)"
-    if [[ -n "$missing" ]]; then
-        echo "Missing build packages: $missing"
+    missing_pkgs="$(deps_missing build)"
+    if [[ -n "$missing_pkgs" ]]; then
+        echo "Missing build packages: $missing_pkgs"
         if ask "Install them now with sudo?"; then
             # shellcheck disable=SC2086
-            deps_install $missing
+            deps_install $missing_pkgs
         else
             die "install the packages above and run this again"
         fi
