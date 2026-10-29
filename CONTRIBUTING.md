@@ -28,7 +28,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the pieces fit together
 - The extension must never block the compositor: no synchronous subprocesses or file I/O in hot paths, and no shell (`Gio.Subprocess` with an argv).
 - Never let the renderer window get in the way: it must stay click-through, unfocused and invisible.
 - Engine changes go into `patches/linux-wallpaperengine/` as small, upstreamable patches. Regenerate them with `git diff` in the engine checkout.
-- CI runs syntax checks (`node --check`, `python3 -m py_compile`, `bash -n`, `shellcheck`); run them before pushing.
+- CI runs syntax checks (`node --check`, `python3 -m py_compile`, `bash -n`, `shellcheck`) and the extensions.gnome.org review checker [Shexli](https://pypi.org/project/shexli/); run them before pushing.
 
 ## Releases
 

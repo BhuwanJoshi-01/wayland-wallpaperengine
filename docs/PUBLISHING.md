@@ -12,7 +12,9 @@ Publishing the release triggers the `release` workflow, which builds `wayland-wa
 
 ## extensions.gnome.org
 
-1. Build the zip: `scripts/pack-extension.sh` (output in `dist/`).
+1. Build the zip: `scripts/pack-extension.sh` (output in `dist/`), or download it from the GitHub release.
+   It must pass [Shexli](https://pypi.org/project/shexli/) with no findings (CI checks this):
+   `python3 -m venv /tmp/shexli && /tmp/shexli/bin/pip install shexli "tree-sitter<0.26" && /tmp/shexli/bin/shexli "$PWD/dist/<uuid>.shell-extension.zip"`
 2. Log in at <https://extensions.gnome.org/upload/> and upload it.
 3. Review notes worth mentioning in the upload form:
    - The extension needs the `wwe` tool and linux-wallpaperengine from this repository. It shows nothing on its own, and its description says so.

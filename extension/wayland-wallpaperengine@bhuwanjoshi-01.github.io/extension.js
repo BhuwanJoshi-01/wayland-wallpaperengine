@@ -142,13 +142,11 @@ export default class WaylandWallpaperEngine extends Extension {
         });
         this._syncMenuVisibility();
 
+        this._pauseMode = 'focus';
+        this._configFile = Gio.File.new_for_path(CONFIG_PATH);
+        this._configMonitor = this._configFile.monitor_file(Gio.FileMonitorFlags.WATCH_MOVES, null);
+        this._configMonitorId = this._configMonitor.connect('changed', () => this._loadConfig());
         this._loadConfig();
-        this._configMonitor = Gio.File.new_for_path(CONFIG_PATH)
-            .monitor_file(Gio.FileMonitorFlags.WATCH_MOVES, null);
-        this._configMonitor.connect('changed', () => {
-            this._loadConfig();
-            this._updatePause();
-        });
 
         this._displaySignals = [
             global.display.connect('window-created', (_display, win) => this._onWindowCreated(win)),
@@ -165,18 +163,30 @@ export default class WaylandWallpaperEngine extends Extension {
         for (const actor of this._getAllWindowActors())
             this._onWindowCreated(actor.meta_window);
 
-        this._reloadBackgrounds();
+        this._reloadBackgrounds(true);
     }
 
     disable() {
+        // This extension uses the unlock-dialog session mode: the lock screen
+        // shows the same background actors and should keep the wallpaper (it
+        // is paused there). So disable() runs when the session ends or the
+        // extension is turned off, not when the screen locks. The picker is
+        // hidden on the lock screen (_syncMenuVisibility).
         for (const id of this._displaySignals)
             global.display.disconnect(id);
         this._displaySignals = [];
         global.workspace_manager.disconnect(this._workspaceSignal);
         this._overviewSignals.forEach(id => Main.overview.disconnect(id));
         this._overviewSignals = [];
+        this._configMonitor.disconnect(this._configMonitorId);
         this._configMonitor.cancel();
         this._configMonitor = null;
+        this._configCancellable?.cancel();
+        this._configCancellable = null;
+        if (this._blurRefreshId) {
+            GLib.source_remove(this._blurRefreshId);
+            this._blurRefreshId = 0;
+        }
 
         this._input.disable();
         this._input = null;
@@ -209,20 +219,28 @@ export default class WaylandWallpaperEngine extends Extension {
             holder.destroy();
         this._holders.clear();
 
-        this._reloadBackgrounds();
+        this._reloadBackgrounds(false);
     }
 
     _loadConfig() {
-        let mode = 'focus';
-        try {
-            const [, bytes] = GLib.file_get_contents(CONFIG_PATH);
-            const value = JSON.parse(new TextDecoder().decode(bytes)).pause;
-            if (PAUSE_MODES.has(value))
-                mode = value;
-        } catch {
-            // no config yet, or it is being rewritten: keep the default
-        }
-        this._pauseMode = mode;
+        this._configCancellable?.cancel();
+        const cancellable = new Gio.Cancellable();
+        this._configCancellable = cancellable;
+        this._configFile.load_contents_async(cancellable, (file, res) => {
+            if (cancellable.is_cancelled())
+                return;
+            let mode = 'focus';
+            try {
+                const [, bytes] = file.load_contents_finish(res);
+                const value = JSON.parse(new TextDecoder().decode(bytes)).pause;
+                if (PAUSE_MODES.has(value))
+                    mode = value;
+            } catch {
+                // no config yet, or it is being rewritten: keep the default
+            }
+            this._pauseMode = mode;
+            this._updatePause();
+        });
     }
 
     _syncMenuVisibility() {
@@ -536,7 +554,7 @@ export default class WaylandWallpaperEngine extends Extension {
             this._fillHolder(holder);
     }
 
-    _reloadBackgrounds() {
+    _reloadBackgrounds(refreshBlur) {
         // async (returns a promise) since GNOME 48
         Promise.resolve(Main.layoutManager._updateBackgrounds()).catch(logError);
         Main.screenShield?._dialog?._updateBackgrounds?.();
@@ -546,7 +564,12 @@ export default class WaylandWallpaperEngine extends Extension {
             // overview internals differ or another extension (e.g. DING) interferes
         }
         // blur-my-shell caches background clones; make it rebuild them
-        GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
+        if (!refreshBlur)
+            return;
+        if (this._blurRefreshId)
+            GLib.source_remove(this._blurRefreshId);
+        this._blurRefreshId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
+            this._blurRefreshId = 0;
             if (Main.extensionManager._enabledExtensions?.includes('blur-my-shell@aunetx'))
                 Main.layoutManager.emit('monitors-changed');
             return GLib.SOURCE_REMOVE;

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1 (2026-10-29)
+
+- Extension passes the extensions.gnome.org review checker (Shexli) with no findings: the config is read asynchronously, the config monitor's signal and the blur-my-shell refresh timer are cleaned up in `disable()`, and the use of the lock-screen session mode is documented there.
+- CI runs Shexli on every push.
+
 ## 0.1.0 (2026-10-29)
 
 First public release.

@@ -39,3 +39,10 @@ jobs:
 
       - name: Extension package
         run: scripts/pack-extension.sh
+
+      - name: extensions.gnome.org review checks (Shexli)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/shexli"
+          # tree-sitter 0.26 segfaults inside shexli 0.2.1
+          "$RUNNER_TEMP/shexli/bin/pip" install -q shexli "tree-sitter<0.26"
+          "$RUNNER_TEMP/shexli/bin/shexli" "$PWD/dist/wayland-wallpaperengine@bhuwanjoshi-01.github.io.shell-extension.zip"
