@@ -197,6 +197,7 @@ export default class WaylandWallpaperEngine extends Extension {
             win.connect('notify::minimized', () => this._hide(win)),
             win.connect_after('shown', () => this._hide(win)),
             win.connect('focus', () => this._giveAwayFocus(win)),
+            win.connect_after('raised', () => win.lower()),
             win.connect('unmanaged', () => this._unmanage(win)),
         ]);
 
@@ -207,7 +208,7 @@ export default class WaylandWallpaperEngine extends Extension {
         win.stick();
         if (win.is_fullscreen())
             win.unmake_fullscreen();
-        win.make_below();
+        win.lower();
         this._makeInputTransparent(win);
         if (win.has_focus())
             this._giveAwayFocus(win);
@@ -367,35 +368,77 @@ export default class WaylandWallpaperEngine extends Extension {
     }
 
     _attachHolder(backgroundActor) {
+        // the clone is laid out by hand (cover scaling), so it must not drive
+        // the holder's size: the holder just fills the background actor
         const holder = new Clutter.Actor({
-            layout_manager: new Clutter.BinLayout(),
             x_expand: true,
             y_expand: true,
             reactive: false,
+            clip_to_allocation: true,
         });
-        const clone = new Clutter.Clone({
-            x_expand: true,
-            y_expand: true,
-            reactive: false,
-        });
+        const clone = new Clutter.Clone({reactive: false});
         holder.add_child(clone);
         holder._wpeClone = clone;
         holder._wpeMonitor = backgroundActor.monitor;
+        holder._wpeSourceIds = [];
+        holder.connect('notify::allocation', () => this._layoutClone(holder));
 
         backgroundActor.layout_manager = new Clutter.BinLayout();
         backgroundActor.add_child(holder);
 
         this._holders.add(holder);
-        holder.connect('destroy', () => this._holders?.delete(holder));
+        holder.connect('destroy', () => {
+            this._untrackSource(holder);
+            this._holders?.delete(holder);
+        });
 
         this._fillHolder(holder);
     }
 
     _fillHolder(holder) {
         const source = this._rendererActorFor(holder._wpeMonitor);
-        if (holder._wpeClone.source !== source)
+        if (holder._wpeClone.source !== source) {
+            this._untrackSource(holder);
             holder._wpeClone.set_source(source);
+            if (source) {
+                holder._wpeSourceRef = source;
+                holder._wpeSourceIds = [
+                    source.connect('notify::width', () => this._layoutClone(holder)),
+                    source.connect('notify::height', () => this._layoutClone(holder)),
+                ];
+            }
+        }
         holder.visible = source !== null;
+        this._layoutClone(holder);
+    }
+
+    _untrackSource(holder) {
+        for (const id of holder._wpeSourceIds)
+            holder._wpeSourceRef?.disconnect(id);
+        holder._wpeSourceIds = [];
+        holder._wpeSourceRef = null;
+    }
+
+    // Like CSS background-size: cover. A renderer window is not always exactly
+    // monitor sized (GNOME keeps resizable windows such as mpv above panels),
+    // so scale uniformly and crop instead of stretching.
+    _layoutClone(holder) {
+        const clone = holder._wpeClone;
+        const box = holder.get_allocation_box();
+        const [hw, hh] = [box.get_width(), box.get_height()];
+        const source = clone.source;
+        if (!source || hw <= 0 || hh <= 0)
+            return;
+        const [sw, sh] = [source.width, source.height];
+        if (sw <= 0 || sh <= 0) {
+            clone.set_position(0, 0);
+            clone.set_size(hw, hh);
+            return;
+        }
+        const scale = Math.max(hw / sw, hh / sh);
+        const [w, h] = [Math.ceil(sw * scale), Math.ceil(sh * scale)];
+        clone.set_position(Math.floor((hw - w) / 2), Math.floor((hh - h) / 2));
+        clone.set_size(w, h);
     }
 
     _refreshClones() {
