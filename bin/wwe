@@ -10,6 +10,11 @@ video files as live wallpapers on Wayland:
     as the desktop background.
   * KDE Plasma, Hyprland, Sway, niri, ... (wlr-layer-shell): linux-wallpaperengine
     draws on the background layer directly with --screen-root.
+
+By default it follows Wallpaper Engine itself: whatever you select in the
+Wallpaper Engine app (running through Proton) is shown, with the property
+values you set there. `wwe set` switches to a manually chosen wallpaper and
+`wwe sync` goes back to following Wallpaper Engine.
 """
 
 import argparse
@@ -17,9 +22,11 @@ import json
 import os
 import random
 import re
+import signal
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 APP = "wwe"
@@ -32,16 +39,23 @@ VIDEO_EXTS = {".mp4", ".webm", ".mkv", ".mov", ".avi", ".m4v", ".gif"}
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / APP
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
+# control sockets the GNOME extension talks to (pointer, mute)
+RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / APP
+ENGINE_SOCKET = RUNTIME_DIR / "engine.sock"
+MPV_SOCKET = RUNTIME_DIR / "mpv.sock"
+
 DEFAULT_CONFIG = {
-    "wallpaper": None,         # workshop id, project directory or video file
+    "source": "wallpaper-engine",  # wallpaper-engine (follow the WE app) | manual
+    "wallpaper": None,         # manual wallpaper: workshop id, project directory or video file
     "fps": 30,
-    "silent": True,
-    "volume": 15,
+    "silent": False,
+    "volume": 50,              # 0-100
+    "automute": False,         # also mute while other apps play audio
     "scaling": "fill",         # fill | fit | stretch | default
     "gpu": "igpu",             # igpu | dgpu (NVIDIA PRIME offload)
     "backend": "auto",         # auto | gnome | layer-shell
     "video_player": "auto",    # auto | mpv | engine
-    "disable_mouse": True,
+    "disable_mouse": False,
     "properties": {},          # wallpaper property overrides, name -> value
     "engine": None,            # path to linux-wallpaperengine (auto-detected)
     "extra_args": [],          # appended to the linux-wallpaperengine command line
@@ -180,6 +194,90 @@ def resolve_wallpaper(ref):
 
 
 # ---------------------------------------------------------------------------
+# Wallpaper Engine (Windows app via Proton) config sync
+# ---------------------------------------------------------------------------
+
+def we_config_file():
+    for lib in steam_libraries():
+        f = lib / "common/wallpaper_engine/config.json"
+        if f.exists():
+            return f
+    return None
+
+
+def map_we_path(path):
+    """Map a path from the WE config (Proton drive letters) to a local path."""
+    p = str(path).replace("\\", "/")
+    i = p.lower().find("steamapps/")
+    if i >= 0:
+        rel = p[i + len("steamapps/"):]
+        for lib in steam_libraries():
+            cand = lib / rel
+            if cand.exists():
+                return cand
+    if re.match(r"^[zZ]:/", p):  # Wine maps Z: to /
+        cand = Path(p[2:])
+        if cand.exists():
+            return cand
+    return None
+
+
+def we_value(v):
+    """WE property value -> linux-wallpaperengine --set-property string."""
+    if isinstance(v, dict):
+        v = v.get("value", "")
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    return str(v)
+
+
+def we_selection():
+    """What the Wallpaper Engine app has selected, or None.
+
+    Returns {"item": <resolved wallpaper>, "properties": {...}, "monitor": key}."""
+    f = we_config_file()
+    if not f:
+        return None
+    try:
+        data = json.loads(f.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    # one section per Steam account (under Proton usually "steamuser")
+    for user in (v for v in data.values() if isinstance(v, dict) and "general" in v):
+        selected = (user["general"].get("wallpaperconfig") or {}).get("selectedwallpapers") or {}
+        for monitor, entry in selected.items():
+            if not isinstance(entry, dict) or not entry.get("file"):
+                continue
+            local = map_we_path(entry["file"])
+            if local is None:
+                print(f"{APP}: cannot find {entry['file']} locally", file=sys.stderr, flush=True)
+                continue
+            target = local.parent if local.name == "project.json" else local
+            try:
+                item = resolve_wallpaper(str(target))
+            except SystemExit:
+                continue
+            props = {}
+            wprops = user.get("wproperties") or {}
+            for key in (entry["file"], entry["file"].replace("/", "\\")):
+                if isinstance(wprops.get(key), dict):
+                    props = {k: we_value(v) for k, v in wprops[key].items()}
+                    break
+            return {"item": item, "properties": props, "monitor": monitor}
+    return None
+
+
+def current_selection(cfg):
+    """(item, properties, origin) the renderer should show right now."""
+    if cfg.get("source", "wallpaper-engine") == "wallpaper-engine":
+        sel = we_selection()
+        if sel:
+            return sel["item"], sel["properties"], "wallpaper-engine"
+    return resolve_wallpaper(cfg.get("wallpaper")), dict(cfg.get("properties") or {}), "manual"
+
+
+# ---------------------------------------------------------------------------
 # display / session detection
 # ---------------------------------------------------------------------------
 
@@ -274,25 +372,28 @@ def gpu_env(cfg, env):
     return env
 
 
-def engine_common_args(cfg):
+def engine_common_args(cfg, properties):
     args = ["--fps", str(cfg["fps"])]
     if cfg.get("silent"):
         args.append("--silent")
     else:
-        args += ["--volume", str(cfg["volume"])]
-    if cfg.get("disable_mouse", True):
+        # linux-wallpaperengine volume is 0-128 (SDL_MIX_MAXVOLUME)
+        args += ["--volume", str(round(max(0, min(100, int(cfg["volume"]))) * 1.28))]
+    if not cfg.get("automute"):
+        args.append("--noautomute")
+    if cfg.get("disable_mouse"):
         # without mouse input, camera parallax parks the camera off-centre and
         # exposes the scene's clear colour along two edges
         args += ["--disable-mouse", "--disable-parallax"]
     a = assets_dir()
     if a:
         args += ["--assets-dir", str(a)]
-    for k, v in (cfg.get("properties") or {}).items():
+    for k, v in properties.items():
         args += ["--set-property", f"{k}={v}"]
     return args
 
 
-def build_command(cfg, item, backend):
+def build_command(cfg, item, backend, properties):
     """Return (argv, env) for the renderer."""
     env = gpu_env(cfg, dict(os.environ))
     scaling = cfg.get("scaling", "fill")
@@ -311,7 +412,9 @@ def build_command(cfg, item, backend):
                     "--no-border", "--keepaspect-window=no",
                     "--loop-file=inf", "--no-osc", "--osd-level=0", "--no-input-default-bindings",
                     "--input-vo-keyboard=no", "--cursor-autohide=always", "--really-quiet",
-                    "--hwdec=auto-safe", "--stop-screensaver=no"]
+                    "--hwdec=auto-safe", "--stop-screensaver=no",
+                    # the extension mutes us while the desktop is not focused
+                    f"--input-ipc-server={MPV_SOCKET}"]
             if scaling == "fill":
                 argv.append("--panscan=1.0")
             elif scaling == "stretch":
@@ -329,7 +432,9 @@ def build_command(cfg, item, backend):
         argv = [engine, "--window", f"0x0x{w}x{h}", "--scaling", scaling,
                 # GNOME has no fullscreen detection protocol; the extension pauses us instead
                 "--no-fullscreen-pause"]
-        argv += engine_common_args(cfg) + list(cfg.get("extra_args") or []) + [str(item["path"])]
+        argv += engine_common_args(cfg, properties) + list(cfg.get("extra_args") or []) + [str(item["path"])]
+        # the hidden window gets no input; the extension sends pointer / mute here
+        env["WWE_CONTROL_SOCKET"] = str(ENGINE_SOCKET)
         return argv, env
 
     # layer-shell (KDE, wlroots) and X11: linux-wallpaperengine draws on the background itself
@@ -340,7 +445,7 @@ def build_command(cfg, item, backend):
     argv = [engine]
     for o in outputs:
         argv += ["--screen-root", o, "--bg", str(item["path"]), "--scaling", scaling]
-    argv += engine_common_args(cfg) + list(cfg.get("extra_args") or [])
+    argv += engine_common_args(cfg, properties) + list(cfg.get("extra_args") or [])
     return argv, env
 
 
@@ -389,6 +494,7 @@ def cmd_set(args):
     item = resolve_wallpaper(args.wallpaper)
     p = Path(args.wallpaper).expanduser()
     cfg["wallpaper"] = str(p.resolve()) if p.exists() else str(args.wallpaper)
+    cfg["source"] = "manual"
     for key in ("fps", "scaling", "volume", "gpu"):
         v = getattr(args, key, None)
         if v is not None:
@@ -420,6 +526,7 @@ def cmd_random(args):
     choices = [i for i in items if i["id"] != str(cfg.get("wallpaper"))] or items
     item = random.choice(choices)
     cfg["wallpaper"] = item["id"]
+    cfg["source"] = "manual"
     cfg["properties"] = {}
     save_config(cfg)
     print(f"wallpaper: {item['title']} ({item['type']})")
@@ -441,6 +548,7 @@ def cmd_pick(_args):
         return
     cfg = load_config()
     cfg["wallpaper"] = choice
+    cfg["source"] = "manual"
     cfg["properties"] = {}
     save_config(cfg)
     apply_now()
@@ -448,7 +556,7 @@ def cmd_pick(_args):
 
 def cmd_properties(args):
     cfg = load_config()
-    item = resolve_wallpaper(args.wallpaper or cfg.get("wallpaper"))
+    item = resolve_wallpaper(args.wallpaper) if args.wallpaper else current_selection(cfg)[0]
     engine = find_engine(cfg)
     if not engine:
         die("linux-wallpaperengine not found")
@@ -463,20 +571,112 @@ def cmd_properties(args):
 def cmd_run(args):
     cfg = load_config()
     if args.wallpaper:
-        cfg["wallpaper"] = args.wallpaper
-    item = resolve_wallpaper(cfg.get("wallpaper"))
+        cfg["source"], cfg["wallpaper"] = "manual", args.wallpaper
     backend = detect_backend(cfg)
-    argv, env = build_command(cfg, item, backend)
-    print(f"{APP}: backend={backend} type={item['type']} title={item['title']!r}", flush=True)
-    print(f"{APP}: exec {' '.join(argv)}", flush=True)
+
     if args.dry_run:
+        item, props, origin = current_selection(cfg)
+        argv, _env = build_command(cfg, item, backend, props)
+        print(f"{APP}: backend={backend} source={origin} type={item['type']} title={item['title']!r}")
+        print(f"{APP}: exec {' '.join(argv)}")
         return
+
     if backend == "gnome" and gnome_extension_state() not in ("enabled", "active"):
         print(f"{APP}: warning: GNOME extension {EXTENSION_UUID} is not enabled; "
               "the wallpaper will show up as a normal window", file=sys.stderr, flush=True)
-    # exec so the renderer keeps our pid: systemd tracks it, and the GNOME
-    # extension can SIGSTOP/SIGCONT its process group while something is fullscreen
-    os.execvpe(argv[0], argv, env)
+    RUNTIME_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    Supervisor(args.wallpaper, backend).run()
+
+
+class Supervisor:
+    """Runs the renderer and restarts it whenever the selection changes
+    (wwe config or Wallpaper Engine's config.json)."""
+
+    POLL_SECONDS = 1.0
+    MAX_CRASHES = 3          # within CRASH_WINDOW: then wait for a new selection
+    CRASH_WINDOW = 60
+
+    def __init__(self, override, backend):
+        self.override = override
+        self.backend = backend
+        self.child = None
+        self.key = None
+        self.crashes = []
+        self.stopping = False
+
+    def watched_mtimes(self):
+        files = [CONFIG_FILE, we_config_file()]
+        return tuple(f.stat().st_mtime if f and f.exists() else 0 for f in files)
+
+    def desired(self):
+        cfg = load_config()
+        if self.override:
+            cfg["source"], cfg["wallpaper"] = "manual", self.override
+        item, props, origin = current_selection(cfg)
+        argv, env = build_command(cfg, item, self.backend, props)
+        return argv, env, item, origin
+
+    def start(self, argv, env, item, origin):
+        print(f"{APP}: backend={self.backend} source={origin} type={item['type']} "
+              f"title={item['title']!r}", flush=True)
+        print(f"{APP}: exec {' '.join(argv)}", flush=True)
+        # own process group: the GNOME extension SIGSTOPs/SIGCONTs the whole
+        # group (renderer + CEF helpers) while something is fullscreen
+        self.child = subprocess.Popen(argv, env=env, start_new_session=True)
+
+    def stop_child(self):
+        if not self.child or self.child.poll() is not None:
+            self.child = None
+            return
+        try:
+            os.killpg(self.child.pid, signal.SIGCONT)  # in case it is paused
+            os.killpg(self.child.pid, signal.SIGTERM)
+            self.child.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            os.killpg(self.child.pid, signal.SIGKILL)
+            self.child.wait()
+        except ProcessLookupError:
+            pass
+        self.child = None
+
+    def on_signal(self, signum, _frame):
+        self.stopping = True
+
+    def run(self):
+        signal.signal(signal.SIGTERM, self.on_signal)
+        signal.signal(signal.SIGINT, self.on_signal)
+        mtimes = None
+        try:
+            while not self.stopping:
+                current = self.watched_mtimes()
+                if current != mtimes:
+                    mtimes = current
+                    try:
+                        argv, env, item, origin = self.desired()
+                    except SystemExit:
+                        argv = None  # nothing selected / not found; keep what is running
+                    if argv and argv != self.key:
+                        self.stop_child()
+                        self.key = argv
+                        self.crashes = []
+                        self.start(argv, env, item, origin)
+
+                if self.child and self.child.poll() is not None:
+                    code = self.child.returncode
+                    self.child = None
+                    now = time.monotonic()
+                    self.crashes = [t for t in self.crashes if now - t < self.CRASH_WINDOW] + [now]
+                    if len(self.crashes) <= self.MAX_CRASHES:
+                        print(f"{APP}: renderer exited ({code}), restarting", file=sys.stderr, flush=True)
+                        argv, env, item, origin = self.desired()
+                        self.key = argv
+                        self.start(argv, env, item, origin)
+                    else:
+                        print(f"{APP}: renderer keeps crashing; waiting for another wallpaper",
+                              file=sys.stderr, flush=True)
+                time.sleep(self.POLL_SECONDS)
+        finally:
+            self.stop_child()
 
 
 def cmd_service(action):
@@ -487,6 +687,21 @@ def cmd_service(action):
         if r.returncode != 0:
             die(r.stderr.strip() or f"systemctl --user {action} {SERVICE} failed")
     return run
+
+
+def cmd_sync(args):
+    cfg = load_config()
+    cfg["source"] = "manual" if args.off else "wallpaper-engine"
+    save_config(cfg)
+    if args.off:
+        print("following the manual wallpaper (wwe set)")
+        return
+    sel = we_selection()
+    if sel:
+        print(f"following Wallpaper Engine: {sel['item']['title']} ({sel['item']['type']})")
+    else:
+        print("following Wallpaper Engine (nothing selected there yet; showing the manual wallpaper)")
+    print("changes are picked up automatically while wwe.service runs")
 
 
 def cmd_status(_args):
@@ -518,8 +733,13 @@ def cmd_doctor(_args):
         print(f"       outputs : {', '.join(drm_outputs()) or '-'}")
     print(f"[{ok(service_installed())}] service    : {SERVICE} "
           f"({systemctl('is-active', SERVICE).stdout.strip() or 'unknown'})")
+    wc = we_config_file()
+    print(f"[{ok(wc)}] WE config  : {wc or 'Wallpaper Engine not installed in Steam'}")
+    sel = we_selection()
+    print(f"       WE pick : {(sel['item']['title'] + ' (' + sel['item']['type'] + ')') if sel else 'nothing selected'}")
+    print(f"       source  : {cfg.get('source')}")
     print(f"       config  : {CONFIG_FILE}")
-    print(f"       current : {cfg.get('wallpaper')}")
+    print(f"       manual  : {cfg.get('wallpaper')}")
 
 
 def main():
@@ -548,6 +768,10 @@ def main():
     p.set_defaults(func=cmd_random)
 
     sub.add_parser("pick", help="choose a wallpaper in a dialog (zenity)").set_defaults(func=cmd_pick)
+
+    p = sub.add_parser("sync", help="follow the wallpaper selected in the Wallpaper Engine app (default)")
+    p.add_argument("--off", action="store_true", help="stop following; use the wwe set wallpaper")
+    p.set_defaults(func=cmd_sync)
 
     p = sub.add_parser("properties", help="list the configurable properties of a wallpaper")
     p.add_argument("wallpaper", nargs="?")

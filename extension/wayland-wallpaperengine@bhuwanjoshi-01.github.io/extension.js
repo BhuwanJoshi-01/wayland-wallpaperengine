@@ -8,8 +8,10 @@
 //   1. keeps that window minimized and hidden from overview / alt-tab / docks,
 //   2. paints a live Clutter.Clone of it inside every background actor
 //      (desktop, overview workspaces, lock screen),
-//   3. SIGSTOPs the renderer while any monitor has a fullscreen window
-//      (games, videos) and SIGCONTs it afterwards.
+//   3. SIGSTOPs the renderer while another window is fullscreen (games,
+//      videos) and SIGCONTs it afterwards,
+//   4. forwards the pointer and plays wallpaper audio only while the desktop
+//      is focused (input.js).
 //
 // Technique adapted from the Hanabi extension (GPL-3.0-or-later):
 // https://github.com/jeffshee/gnome-ext-hanabi
@@ -25,6 +27,8 @@ import * as Background from 'resource:///org/gnome/shell/ui/background.js';
 import * as WindowManager from 'resource:///org/gnome/shell/ui/windowManager.js';
 import * as Workspace from 'resource:///org/gnome/shell/ui/workspace.js';
 import * as WorkspaceThumbnail from 'resource:///org/gnome/shell/ui/workspaceThumbnail.js';
+
+import {InputBridge} from './input.js';
 
 // Wayland app_ids of renderer windows: the patched linux-wallpaperengine build
 // and mpv started with --wayland-app-id. The window title is the fallback for
@@ -66,6 +70,12 @@ export default class WaylandWallpaperEngine extends Extension {
 
         this._installOverrides();
 
+        this._input = new InputBridge({
+            getRenderers: () => [...this._renderers.keys()],
+            isRenderer,
+        });
+        this._input.enable();
+
         this._displaySignals = [
             global.display.connect('window-created', (_display, win) => this._onWindowCreated(win)),
             global.display.connect('in-fullscreen-changed', () => this._updatePause()),
@@ -84,6 +94,9 @@ export default class WaylandWallpaperEngine extends Extension {
             global.display.disconnect(id);
         this._displaySignals = [];
         global.workspace_manager.disconnect(this._workspaceSignal);
+
+        this._input.disable();
+        this._input = null;
 
         for (const id of this._contentWaits.values())
             GLib.source_remove(id);
@@ -183,6 +196,7 @@ export default class WaylandWallpaperEngine extends Extension {
             });
         }
         this._updatePause();
+        this._input.rendererAdded();
     }
 
     _unmanage(win) {
@@ -198,6 +212,7 @@ export default class WaylandWallpaperEngine extends Extension {
         this._stoppedPids.delete(pid);
 
         this._refreshClones();
+        this._input.update();
     }
 
     // Mutter keeps the last buffer of a minimized window, so the clones keep
@@ -252,6 +267,7 @@ export default class WaylandWallpaperEngine extends Extension {
         const workspace = global.workspace_manager.get_active_workspace();
         const fullscreen = global.display.list_all_windows().some(w =>
             !isRenderer(w) && w.is_fullscreen() && !w.minimized && w.located_on_workspace(workspace));
+        this._input?.setPaused(fullscreen);
 
         for (const win of this._renderers.keys()) {
             const pid = win.get_pid();

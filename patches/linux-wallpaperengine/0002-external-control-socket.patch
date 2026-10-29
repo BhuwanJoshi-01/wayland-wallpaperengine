@@ -1,0 +1,257 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 11565a1..d314a76 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -351,6 +351,8 @@ set(COMMON_SOURCES
+     src/WallpaperEngine/Input/InputContext.cpp
+     src/WallpaperEngine/Input/InputContext.h
+     src/WallpaperEngine/Input/MouseInput.h
++    src/WallpaperEngine/Input/ExternalControl.cpp
++    src/WallpaperEngine/Input/ExternalControl.h
+     src/WallpaperEngine/Input/Drivers/GLFWMouseInput.cpp
+     src/WallpaperEngine/Input/Drivers/GLFWMouseInput.h
+ 
+diff --git a/src/WallpaperEngine/Audio/Drivers/Detectors/AudioPlayingDetector.cpp b/src/WallpaperEngine/Audio/Drivers/Detectors/AudioPlayingDetector.cpp
+index adf60bb..12c5f62 100644
+--- a/src/WallpaperEngine/Audio/Drivers/Detectors/AudioPlayingDetector.cpp
++++ b/src/WallpaperEngine/Audio/Drivers/Detectors/AudioPlayingDetector.cpp
+@@ -1,4 +1,5 @@
+ #include "AudioPlayingDetector.h"
++#include "WallpaperEngine/Input/ExternalControl.h"
+ 
+ namespace WallpaperEngine::Audio::Drivers::Detectors {
+ AudioPlayingDetector::AudioPlayingDetector (
+@@ -6,7 +7,10 @@ AudioPlayingDetector::AudioPlayingDetector (
+     const Render::Drivers::Detectors::FullScreenDetector& fullscreenDetector
+ ) : m_applicationContext (appContext), m_fullscreenDetector (fullscreenDetector) { }
+ 
+-bool AudioPlayingDetector::anythingPlaying () const { return this->m_isPlaying; }
++bool AudioPlayingDetector::anythingPlaying () const {
++    // an external controller muting us behaves like another app playing audio (automute)
++    return this->m_isPlaying || Input::ExternalControl::get ().muted ();
++}
+ 
+ Application::ApplicationContext& AudioPlayingDetector::getApplicationContext () const {
+     return this->m_applicationContext;
+diff --git a/src/WallpaperEngine/Input/Drivers/GLFWMouseInput.cpp b/src/WallpaperEngine/Input/Drivers/GLFWMouseInput.cpp
+index 8ddce13..6176cf8 100644
+--- a/src/WallpaperEngine/Input/Drivers/GLFWMouseInput.cpp
++++ b/src/WallpaperEngine/Input/Drivers/GLFWMouseInput.cpp
+@@ -1,18 +1,43 @@
+ #include "GLFWMouseInput.h"
+ #include <glm/common.hpp>
+ 
++#include "WallpaperEngine/Input/ExternalControl.h"
+ #include "WallpaperEngine/Render/Drivers/GLFWOpenGLDriver.h"
+ 
+ using namespace WallpaperEngine::Input::Drivers;
+ 
+-GLFWMouseInput::GLFWMouseInput (const Render::Drivers::GLFWOpenGLDriver& driver) : m_driver (driver) { }
++GLFWMouseInput::GLFWMouseInput (const Render::Drivers::GLFWOpenGLDriver& driver) : m_driver (driver) {
++    // create the control channel on the main thread: the build uses -fno-threadsafe-statics
++    // and the audio thread queries it too
++    ExternalControl::get ();
++}
+ 
+ void GLFWMouseInput::update () {
++    auto& external = ExternalControl::get ();
++    external.poll ();
++
+     if (!this->m_driver.getApp ().getContext ().settings.mouse.enabled) {
+ 	this->m_reportedPosition = { 0, 0 };
+ 	return;
+     }
+ 
++    if (external.active ()) {
++	// the window never gets input itself (e.g. hidden and cloned by a GNOME Shell extension);
++	// input comes in window coordinates (top-left origin, logical pixels) from the control socket
++	int windowWidth = 0, windowHeight = 0;
++	glfwGetWindowSize (this->m_driver.getWindow (), &windowWidth, &windowHeight);
++	const glm::ivec2 framebufferSize = this->m_driver.getFramebufferSize ();
++	const double scaleX = windowWidth > 0 ? static_cast<double> (framebufferSize.x) / windowWidth : 1.0;
++	const double scaleY = windowHeight > 0 ? static_cast<double> (framebufferSize.y) / windowHeight : 1.0;
++
++	this->m_leftClick = external.leftClick ();
++	this->m_rightClick = external.rightClick ();
++	this->m_mousePosition.x = external.position ().x * scaleX;
++	this->m_mousePosition.y = static_cast<double> (framebufferSize.y) - external.position ().y * scaleY;
++	this->m_reportedPosition = this->m_mousePosition;
++	return;
++    }
++
+     const int leftClickState = glfwGetMouseButton (this->m_driver.getWindow (), GLFW_MOUSE_BUTTON_LEFT);
+     const int rightClickState = glfwGetMouseButton (this->m_driver.getWindow (), GLFW_MOUSE_BUTTON_RIGHT);
+ 
+diff --git a/src/WallpaperEngine/Input/ExternalControl.cpp b/src/WallpaperEngine/Input/ExternalControl.cpp
+new file mode 100644
+index 0000000..e964312
+--- /dev/null
++++ b/src/WallpaperEngine/Input/ExternalControl.cpp
+@@ -0,0 +1,106 @@
++#include "ExternalControl.h"
++
++#include "WallpaperEngine/Logging/Log.h"
++
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <sys/socket.h>
++#include <sys/stat.h>
++#include <sys/un.h>
++#include <unistd.h>
++
++using namespace WallpaperEngine::Input;
++
++ExternalControl& ExternalControl::get () {
++    static ExternalControl instance;
++    return instance;
++}
++
++ExternalControl::ExternalControl () {
++    const char* path = getenv ("WWE_CONTROL_SOCKET");
++
++    if (path == nullptr || *path == '\0') {
++	return;
++    }
++
++    sockaddr_un addr {};
++
++    if (strlen (path) >= sizeof (addr.sun_path)) {
++	sLog.error ("WWE_CONTROL_SOCKET path is too long: ", path);
++	return;
++    }
++
++    const int fd = socket (AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
++
++    if (fd < 0) {
++	sLog.error ("Cannot create control socket: ", strerror (errno));
++	return;
++    }
++
++    addr.sun_family = AF_UNIX;
++    strncpy (addr.sun_path, path, sizeof (addr.sun_path) - 1);
++    unlink (path);
++
++    if (bind (fd, reinterpret_cast<sockaddr*> (&addr), sizeof (addr)) < 0) {
++	sLog.error ("Cannot bind control socket ", path, ": ", strerror (errno));
++	close (fd);
++	return;
++    }
++
++    chmod (path, 0600);
++    this->m_fd = fd;
++    this->m_path = path;
++    sLog.out ("Listening for external input on ", path);
++}
++
++ExternalControl::~ExternalControl () {
++    if (this->m_fd >= 0) {
++	close (this->m_fd);
++	unlink (this->m_path.c_str ());
++    }
++}
++
++void ExternalControl::poll () {
++    if (this->m_fd < 0) {
++	return;
++    }
++
++    char buffer[256];
++
++    while (true) {
++	const ssize_t length = recv (this->m_fd, buffer, sizeof (buffer) - 1, 0);
++
++	if (length <= 0) {
++	    break;
++	}
++
++	buffer[length] = '\0';
++	this->handle (buffer);
++    }
++}
++
++void ExternalControl::handle (const char* command) {
++    double x, y;
++    int value;
++
++    switch (command[0]) {
++	case 'P':
++	    if (sscanf (command + 1, "%lf %lf %d", &x, &y, &value) == 3) {
++		this->m_position = { x, y };
++		this->m_buttons = value;
++	    }
++	    break;
++	case 'M':
++	    if (sscanf (command + 1, "%d", &value) == 1) {
++		this->m_muted.store (value != 0, std::memory_order_relaxed);
++	    }
++	    break;
++	default:
++	    break;
++    }
++}
++
++MouseClickStatus ExternalControl::leftClick () const { return (this->m_buttons & 1) ? Clicked : Released; }
++
++MouseClickStatus ExternalControl::rightClick () const { return (this->m_buttons & 2) ? Clicked : Released; }
+diff --git a/src/WallpaperEngine/Input/ExternalControl.h b/src/WallpaperEngine/Input/ExternalControl.h
+new file mode 100644
+index 0000000..681f73e
+--- /dev/null
++++ b/src/WallpaperEngine/Input/ExternalControl.h
+@@ -0,0 +1,55 @@
++#pragma once
++
++#include <atomic>
++#include <string>
++
++#include <glm/vec2.hpp>
++
++#include "WallpaperEngine/Input/MouseInput.h"
++
++namespace WallpaperEngine::Input {
++/**
++ * Optional control channel for compositors where the background window never
++ * receives input itself (e.g. GNOME, where a shell extension paints a clone of
++ * a hidden window as the desktop background).
++ *
++ * Enabled by setting WWE_CONTROL_SOCKET to a filesystem path; a non-blocking
++ * AF_UNIX datagram socket is bound there. Each datagram is one ASCII command:
++ *
++ *   P <x> <y> <buttons>   pointer position in window coordinates (top-left
++ *                         origin, logical pixels); buttons: bit 0 = left,
++ *                         bit 1 = right
++ *   M <0|1>               mute (1) or unmute (0) all wallpaper audio
++ */
++class ExternalControl {
++public:
++    static ExternalControl& get ();
++
++    ExternalControl (const ExternalControl&) = delete;
++    ExternalControl& operator= (const ExternalControl&) = delete;
++
++    /** @return true when WWE_CONTROL_SOCKET was set and the socket is bound */
++    [[nodiscard]] bool active () const { return this->m_fd >= 0; }
++
++    /** Reads every pending command; call once per frame from the render thread */
++    void poll ();
++
++    [[nodiscard]] glm::dvec2 position () const { return this->m_position; }
++    [[nodiscard]] MouseClickStatus leftClick () const;
++    [[nodiscard]] MouseClickStatus rightClick () const;
++    /** Safe to call from the audio thread */
++    [[nodiscard]] bool muted () const { return this->m_muted.load (std::memory_order_relaxed); }
++
++private:
++    ExternalControl ();
++    ~ExternalControl ();
++
++    void handle (const char* command);
++
++    int m_fd = -1;
++    std::string m_path;
++    glm::dvec2 m_position = {};
++    int m_buttons = 0;
++    std::atomic<bool> m_muted = false;
++};
++} // namespace WallpaperEngine::Input
