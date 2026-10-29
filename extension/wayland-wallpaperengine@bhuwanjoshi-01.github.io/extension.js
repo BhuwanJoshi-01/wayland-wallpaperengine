@@ -11,7 +11,8 @@
 //   3. SIGSTOPs the renderer while another window is fullscreen (games,
 //      videos) and SIGCONTs it afterwards,
 //   4. forwards the pointer and plays wallpaper audio only while the desktop
-//      is focused (input.js).
+//      is focused (input.js),
+//   5. adds a top bar wallpaper picker (picker.js).
 //
 // Technique adapted from the Hanabi extension (GPL-3.0-or-later):
 // https://github.com/jeffshee/gnome-ext-hanabi
@@ -29,6 +30,7 @@ import * as Workspace from 'resource:///org/gnome/shell/ui/workspace.js';
 import * as WorkspaceThumbnail from 'resource:///org/gnome/shell/ui/workspaceThumbnail.js';
 
 import {InputBridge} from './input.js';
+import {WallpaperMenu} from './picker.js';
 
 // Wayland app_ids of renderer windows: the patched linux-wallpaperengine build
 // and mpv started with --wayland-app-id. The window title is the fallback for
@@ -36,9 +38,10 @@ import {InputBridge} from './input.js';
 const APP_IDS = new Set(['linux-wallpaperengine', 'wwe-video']);
 const FALLBACK_TITLE = 'wallpaperengine';
 
-// how often / how long to wait for a renderer's first frame before minimizing it
-const CONTENT_POLL_MS = 100;
-const CONTENT_POLL_MAX = 150;
+// how often to check for a renderer's first frame before minimizing it; there
+// is no time limit: a renderer started on the lock screen draws nothing until
+// the session is unlocked
+const CONTENT_POLL_MS = 200;
 
 function hasContent(actor) {
     const [ok, width, height] = actor.get_texture()?.get_preferred_size() ?? [false, 0, 0];
@@ -76,6 +79,13 @@ export default class WaylandWallpaperEngine extends Extension {
         });
         this._input.enable();
 
+        // the extension also runs on the lock screen (for the live background);
+        // the picker must never be usable there
+        this._menu = new WallpaperMenu();
+        Main.panel.addToStatusArea(this.uuid, this._menu);
+        this._sessionSignal = Main.sessionMode.connect('updated', () => this._syncMenuVisibility());
+        this._syncMenuVisibility();
+
         this._displaySignals = [
             global.display.connect('window-created', (_display, win) => this._onWindowCreated(win)),
             global.display.connect('in-fullscreen-changed', () => this._updatePause()),
@@ -97,6 +107,10 @@ export default class WaylandWallpaperEngine extends Extension {
 
         this._input.disable();
         this._input = null;
+
+        Main.sessionMode.disconnect(this._sessionSignal);
+        this._menu.destroy();
+        this._menu = null;
 
         for (const id of this._contentWaits.values())
             GLib.source_remove(id);
@@ -123,6 +137,13 @@ export default class WaylandWallpaperEngine extends Extension {
         this._holders.clear();
 
         this._reloadBackgrounds();
+    }
+
+    _syncMenuVisibility() {
+        const allowed = !Main.sessionMode.isLocked && !Main.sessionMode.isGreeter;
+        if (!allowed)
+            this._menu.menu.close();
+        this._menu.visible = allowed;
     }
 
     // ------------------------------------------------------------------
@@ -236,9 +257,8 @@ export default class WaylandWallpaperEngine extends Extension {
             win.unminimize();
         if (this._contentWaits.has(win))
             return;
-        let tries = 0;
         this._contentWaits.set(win, GLib.timeout_add(GLib.PRIORITY_DEFAULT, CONTENT_POLL_MS, () => {
-            if (hasContent(actor) || ++tries >= CONTENT_POLL_MAX) {
+            if (hasContent(actor)) {
                 this._contentWaits.delete(win);
                 if (!win.minimized)
                     win.minimize();

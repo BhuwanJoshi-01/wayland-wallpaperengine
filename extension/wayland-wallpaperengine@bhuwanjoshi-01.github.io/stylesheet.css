@@ -1,0 +1,71 @@
+/* Wayland Wallpaper Engine - top bar picker */
+
+.wwe-header {
+    font-weight: bold;
+}
+
+.wwe-search {
+    min-width: 720px;
+}
+
+.wwe-grid {
+    spacing: 10px;
+    padding: 4px 6px 4px 0;
+}
+
+.wwe-row {
+    spacing: 10px;
+}
+
+.wwe-tile {
+    padding: 4px;
+    border-radius: 10px;
+    border: 2px solid transparent;
+}
+
+.wwe-tile:hover,
+.wwe-tile:focus {
+    background-color: rgba(255, 255, 255, 0.08);
+}
+
+.wwe-tile-current {
+    border-color: -st-accent-color;
+}
+
+.wwe-thumb {
+    width: 168px;
+    height: 95px;
+    border-radius: 7px;
+    background-color: rgba(0, 0, 0, 0.35);
+}
+
+.wwe-title {
+    font-size: 9pt;
+    padding-top: 4px;
+}
+
+.wwe-badge {
+    font-size: 7pt;
+    font-weight: bold;
+    margin: 5px;
+    padding: 1px 6px;
+    border-radius: 6px;
+    color: white;
+    background-color: rgba(0, 0, 0, 0.6);
+}
+
+.wwe-badge-video {
+    background-color: rgba(180, 60, 60, 0.85);
+}
+
+.wwe-badge-web {
+    background-color: rgba(50, 110, 190, 0.85);
+}
+
+.wwe-badge-scene {
+    background-color: rgba(60, 140, 90, 0.85);
+}
+
+.wwe-empty {
+    padding: 24px;
+}

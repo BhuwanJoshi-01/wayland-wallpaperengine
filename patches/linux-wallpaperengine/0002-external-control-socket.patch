@@ -34,10 +34,10 @@ index adf60bb..12c5f62 100644
  Application::ApplicationContext& AudioPlayingDetector::getApplicationContext () const {
      return this->m_applicationContext;
 diff --git a/src/WallpaperEngine/Input/Drivers/GLFWMouseInput.cpp b/src/WallpaperEngine/Input/Drivers/GLFWMouseInput.cpp
-index 8ddce13..6176cf8 100644
+index 8ddce13..7a0765f 100644
 --- a/src/WallpaperEngine/Input/Drivers/GLFWMouseInput.cpp
 +++ b/src/WallpaperEngine/Input/Drivers/GLFWMouseInput.cpp
-@@ -1,18 +1,43 @@
+@@ -1,18 +1,47 @@
  #include "GLFWMouseInput.h"
  #include <glm/common.hpp>
  
@@ -56,6 +56,10 @@ index 8ddce13..6176cf8 100644
  void GLFWMouseInput::update () {
 +    auto& external = ExternalControl::get ();
 +    external.poll ();
++
++    if (external.volume () >= 0) {
++	this->m_driver.getApp ().getContext ().state.audio.volume = external.volume ();
++    }
 +
      if (!this->m_driver.getApp ().getContext ().settings.mouse.enabled) {
  	this->m_reportedPosition = { 0, 0 };
@@ -84,10 +88,10 @@ index 8ddce13..6176cf8 100644
  
 diff --git a/src/WallpaperEngine/Input/ExternalControl.cpp b/src/WallpaperEngine/Input/ExternalControl.cpp
 new file mode 100644
-index 0000000..e964312
+index 0000000..e750bbb
 --- /dev/null
 +++ b/src/WallpaperEngine/Input/ExternalControl.cpp
-@@ -0,0 +1,106 @@
+@@ -0,0 +1,111 @@
 +#include "ExternalControl.h"
 +
 +#include "WallpaperEngine/Logging/Log.h"
@@ -181,6 +185,11 @@ index 0000000..e964312
 +		this->m_buttons = value;
 +	    }
 +	    break;
++	case 'V':
++	    if (sscanf (command + 1, "%d", &value) == 1) {
++		this->m_volume = value < 0 ? 0 : (value > 128 ? 128 : value);
++	    }
++	    break;
 +	case 'M':
 +	    if (sscanf (command + 1, "%d", &value) == 1) {
 +		this->m_muted.store (value != 0, std::memory_order_relaxed);
@@ -196,10 +205,10 @@ index 0000000..e964312
 +MouseClickStatus ExternalControl::rightClick () const { return (this->m_buttons & 2) ? Clicked : Released; }
 diff --git a/src/WallpaperEngine/Input/ExternalControl.h b/src/WallpaperEngine/Input/ExternalControl.h
 new file mode 100644
-index 0000000..681f73e
+index 0000000..f48880f
 --- /dev/null
 +++ b/src/WallpaperEngine/Input/ExternalControl.h
-@@ -0,0 +1,55 @@
+@@ -0,0 +1,59 @@
 +#pragma once
 +
 +#include <atomic>
@@ -222,6 +231,7 @@ index 0000000..681f73e
 + *                         origin, logical pixels); buttons: bit 0 = left,
 + *                         bit 1 = right
 + *   M <0|1>               mute (1) or unmute (0) all wallpaper audio
++ *   V <0-128>             set the audio volume (same scale as --volume)
 + */
 +class ExternalControl {
 +public:
@@ -241,6 +251,8 @@ index 0000000..681f73e
 +    [[nodiscard]] MouseClickStatus rightClick () const;
 +    /** Safe to call from the audio thread */
 +    [[nodiscard]] bool muted () const { return this->m_muted.load (std::memory_order_relaxed); }
++    /** @return the last volume received, or -1 if none was sent */
++    [[nodiscard]] int volume () const { return this->m_volume; }
 +
 +private:
 +    ExternalControl ();
@@ -253,5 +265,6 @@ index 0000000..681f73e
 +    glm::dvec2 m_position = {};
 +    int m_buttons = 0;
 +    std::atomic<bool> m_muted = false;
++    int m_volume = -1;
 +};
 +} // namespace WallpaperEngine::Input

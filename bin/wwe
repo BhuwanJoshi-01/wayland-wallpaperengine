@@ -159,12 +159,14 @@ def list_wallpapers():
             p = read_project(d)
             if p is None:
                 continue
+            preview = d / p["preview"] if p.get("preview") else None
             items[d.name] = {
                 "id": d.name,
                 "path": d,
                 "type": str(p.get("type", "?")).lower(),
                 "title": p.get("title", ""),
                 "file": p.get("file"),
+                "preview": str(preview) if preview and preview.exists() else None,
             }
     return list(items.values())
 
@@ -372,13 +374,15 @@ def gpu_env(cfg, env):
     return env
 
 
+def volume_percent(cfg):
+    return 0 if cfg.get("silent") else max(0, min(100, int(cfg.get("volume", 50))))
+
+
 def engine_common_args(cfg, properties):
-    args = ["--fps", str(cfg["fps"])]
-    if cfg.get("silent"):
-        args.append("--silent")
-    else:
-        # linux-wallpaperengine volume is 0-128 (SDL_MIX_MAXVOLUME)
-        args += ["--volume", str(round(max(0, min(100, int(cfg["volume"]))) * 1.28))]
+    # --volume 0 instead of --silent keeps the audio device open, so the
+    # volume can be changed live over the control socket
+    # (linux-wallpaperengine volume is 0-128, SDL_MIX_MAXVOLUME)
+    args = ["--fps", str(cfg["fps"]), "--volume", str(round(volume_percent(cfg) * 1.28))]
     if not cfg.get("automute"):
         args.append("--noautomute")
     if cfg.get("disable_mouse"):
@@ -419,10 +423,7 @@ def build_command(cfg, item, backend, properties):
                 argv.append("--panscan=1.0")
             elif scaling == "stretch":
                 argv.append("--keepaspect=no")
-            if cfg.get("silent"):
-                argv.append("--aid=no")
-            else:
-                argv.append(f"--volume={cfg['volume']}")
+            argv.append(f"--volume={volume_percent(cfg)}")
             argv.append(str(item["video"]))
             return argv, env
 
@@ -462,11 +463,13 @@ def service_installed():
 
 
 def apply_now():
-    if service_installed():
-        systemctl("restart", SERVICE)
-        print("wallpaper applied (wwe.service restarted)")
-    else:
+    if not service_installed():
         print("wwe.service not installed; run `wwe run` in a terminal or ./install.sh")
+    elif systemctl("is-active", SERVICE).stdout.strip() == "active":
+        print("applied (wwe.service picks up config changes by itself)")
+    else:
+        systemctl("start", SERVICE)
+        print("applied (wwe.service started)")
 
 
 # ---------------------------------------------------------------------------
@@ -642,6 +645,36 @@ class Supervisor:
     def on_signal(self, signum, _frame):
         self.stopping = True
 
+    @staticmethod
+    def without_volume(argv):
+        out, skip = [], False
+        for a in argv:
+            if skip:
+                skip = False
+            elif a == "--volume":
+                skip = True
+            elif not a.startswith("--volume="):
+                out.append(a)
+        return out
+
+    def set_live_volume(self):
+        """Volume-only change: tell the running renderer instead of restarting it."""
+        percent = volume_percent(load_config())
+        try:
+            import socket
+            if Path(self.key[0]).name == "mpv":
+                with socket.socket(socket.AF_UNIX) as s:
+                    s.connect(str(MPV_SOCKET))
+                    s.sendall(json.dumps({"command": ["set_property", "volume", percent]}).encode() + b"\n")
+            else:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
+                    s.sendto(f"V {round(percent * 1.28)}".encode(), str(ENGINE_SOCKET))
+            print(f"{APP}: volume {percent}%", flush=True)
+            return True
+        except OSError as e:
+            print(f"{APP}: live volume change failed ({e}); restarting renderer", file=sys.stderr, flush=True)
+            return False
+
     def run(self):
         signal.signal(signal.SIGTERM, self.on_signal)
         signal.signal(signal.SIGINT, self.on_signal)
@@ -655,7 +688,11 @@ class Supervisor:
                         argv, env, item, origin = self.desired()
                     except SystemExit:
                         argv = None  # nothing selected / not found; keep what is running
-                    if argv and argv != self.key:
+                    if (argv and argv != self.key and self.child and self.key
+                            and self.without_volume(argv) == self.without_volume(self.key)
+                            and self.set_live_volume()):
+                        self.key = argv
+                    elif argv and argv != self.key:
                         self.stop_child()
                         self.key = argv
                         self.crashes = []
@@ -702,6 +739,34 @@ def cmd_sync(args):
     else:
         print("following Wallpaper Engine (nothing selected there yet; showing the manual wallpaper)")
     print("changes are picked up automatically while wwe.service runs")
+
+
+def cmd_state(_args):
+    """Machine-readable state for the GNOME extension's picker."""
+    cfg = load_config()
+    try:
+        item, _props, origin = current_selection(cfg)
+        current = {"current_id": item["id"], "current_title": item["title"], "current_type": item["type"]}
+    except SystemExit:
+        origin, current = None, {"current_id": None, "current_title": None, "current_type": None}
+    print(json.dumps({"source": cfg.get("source"), "origin": origin, "volume": cfg.get("volume"),
+                      "silent": cfg.get("silent"), "fps": cfg.get("fps"), **current}))
+
+
+def cmd_config(args):
+    cfg = load_config()
+    if not args.pairs:
+        print(json.dumps(cfg, indent=2))
+        return
+    for pair in args.pairs:
+        key, sep, raw = pair.partition("=")
+        if not sep or key not in DEFAULT_CONFIG:
+            die(f"unknown setting '{key}' (known: {', '.join(DEFAULT_CONFIG)})")
+        try:
+            cfg[key] = json.loads(raw)  # numbers, true/false, null, lists
+        except json.JSONDecodeError:
+            cfg[key] = raw
+    save_config(cfg)
 
 
 def cmd_status(_args):
@@ -768,6 +833,12 @@ def main():
     p.set_defaults(func=cmd_random)
 
     sub.add_parser("pick", help="choose a wallpaper in a dialog (zenity)").set_defaults(func=cmd_pick)
+
+    sub.add_parser("state", help="print the current state as JSON").set_defaults(func=cmd_state)
+
+    p = sub.add_parser("config", help="show settings, or change them: wwe config volume=70 fps=60")
+    p.add_argument("pairs", nargs="*", metavar="KEY=VALUE")
+    p.set_defaults(func=cmd_config)
 
     p = sub.add_parser("sync", help="follow the wallpaper selected in the Wallpaper Engine app (default)")
     p.add_argument("--off", action="store_true", help="stop following; use the wwe set wallpaper")

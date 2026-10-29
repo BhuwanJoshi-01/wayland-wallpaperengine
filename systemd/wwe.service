@@ -16,8 +16,10 @@ RestartSec=3
 Nice=10
 CPUWeight=40
 IOWeight=40
-MemoryHigh=1536M
-MemoryMax=2G
+# GPU buffers of integrated GPUs live in system RAM and are charged here
+# (a scene needs ~0.8 GB, two overlap briefly while switching). No MemoryHigh:
+# throttling freezes the renderer, a hard cap just stops a runaway one.
+MemoryMax=3G
 
 [Install]
 WantedBy=graphical-session.target
