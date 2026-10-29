@@ -1,0 +1,9 @@
+{
+  "uuid": "wayland-wallpaperengine@bhuwanjoshi-01.github.io",
+  "name": "Wayland Wallpaper Engine",
+  "description": "Live wallpapers on GNOME Wayland. Shows the linux-wallpaperengine (scene/web) or mpv (video) renderer window as the desktop background, and pauses it while a window is fullscreen. Use the `wwe` command to choose a wallpaper.",
+  "shell-version": ["50"],
+  "session-modes": ["user", "unlock-dialog"],
+  "url": "https://github.com/BhuwanJoshi-01/wayland-wallpaperengine",
+  "version": 1
+}

@@ -1,0 +1,13 @@
+diff --git a/src/WallpaperEngine/Render/Drivers/GLFWOpenGLDriver.cpp b/src/WallpaperEngine/Render/Drivers/GLFWOpenGLDriver.cpp
+index 01063d9..268aa9b 100644
+--- a/src/WallpaperEngine/Render/Drivers/GLFWOpenGLDriver.cpp
++++ b/src/WallpaperEngine/Render/Drivers/GLFWOpenGLDriver.cpp
+@@ -35,6 +35,8 @@ GLFWOpenGLDriver::GLFWOpenGLDriver (const char* windowTitle, ApplicationContext&
+     // set X11-specific hints
+     glfwWindowHintString (GLFW_X11_CLASS_NAME, "linux-wallpaperengine");
+     glfwWindowHintString (GLFW_X11_INSTANCE_NAME, "linux-wallpaperengine");
++    // set Wayland app_id so compositor-side helpers (e.g. a GNOME Shell extension) can identify the window
++    glfwWindowHintString (GLFW_WAYLAND_APP_ID, "linux-wallpaperengine");
+ 
+     // for forced window mode, we can set some hints that'll help position the window
+     if (context.settings.render.mode == Application::ApplicationContext::EXPLICIT_WINDOW) {

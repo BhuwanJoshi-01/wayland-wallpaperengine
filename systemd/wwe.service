@@ -1,0 +1,23 @@
+[Unit]
+Description=Wayland Wallpaper Engine renderer
+Documentation=https://github.com/BhuwanJoshi-01/wayland-wallpaperengine
+PartOf=graphical-session.target
+After=graphical-session.target
+# give up after a wallpaper keeps crashing instead of looping forever
+StartLimitIntervalSec=60
+StartLimitBurst=4
+
+[Service]
+Type=exec
+ExecStart=%h/.local/bin/wwe run
+Restart=on-failure
+RestartSec=3
+# a wallpaper must never compete with what you are actually doing
+Nice=10
+CPUWeight=40
+IOWeight=40
+MemoryHigh=1536M
+MemoryMax=2G
+
+[Install]
+WantedBy=graphical-session.target

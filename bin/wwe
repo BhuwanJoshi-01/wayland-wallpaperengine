@@ -1,0 +1,569 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""wwe - Wayland Wallpaper Engine control tool.
+
+Runs Steam Wallpaper Engine workshop items (scene / web / video) and plain
+video files as live wallpapers on Wayland:
+
+  * GNOME (mutter has no wlr-layer-shell): the renderer runs as a normal window
+    and the `wayland-wallpaperengine@bhuwanjoshi-01.github.io` GNOME Shell extension paints it
+    as the desktop background.
+  * KDE Plasma, Hyprland, Sway, niri, ... (wlr-layer-shell): linux-wallpaperengine
+    draws on the background layer directly with --screen-root.
+"""
+
+import argparse
+import json
+import os
+import random
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+APP = "wwe"
+WE_APPID = "431960"
+VIDEO_APP_ID = "wwe-video"
+EXTENSION_UUID = "wayland-wallpaperengine@bhuwanjoshi-01.github.io"
+SERVICE = "wwe.service"
+VIDEO_EXTS = {".mp4", ".webm", ".mkv", ".mov", ".avi", ".m4v", ".gif"}
+
+CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / APP
+CONFIG_FILE = CONFIG_DIR / "config.json"
+
+DEFAULT_CONFIG = {
+    "wallpaper": None,         # workshop id, project directory or video file
+    "fps": 30,
+    "silent": True,
+    "volume": 15,
+    "scaling": "fill",         # fill | fit | stretch | default
+    "gpu": "igpu",             # igpu | dgpu (NVIDIA PRIME offload)
+    "backend": "auto",         # auto | gnome | layer-shell
+    "video_player": "auto",    # auto | mpv | engine
+    "disable_mouse": True,
+    "properties": {},          # wallpaper property overrides, name -> value
+    "engine": None,            # path to linux-wallpaperengine (auto-detected)
+    "extra_args": [],          # appended to the linux-wallpaperengine command line
+}
+
+
+# ---------------------------------------------------------------------------
+# config
+# ---------------------------------------------------------------------------
+
+def load_config():
+    cfg = dict(DEFAULT_CONFIG)
+    if CONFIG_FILE.exists():
+        try:
+            cfg.update(json.loads(CONFIG_FILE.read_text()))
+        except json.JSONDecodeError as e:
+            die(f"{CONFIG_FILE} is not valid JSON: {e}")
+    return cfg
+
+
+def save_config(cfg):
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = CONFIG_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(cfg, indent=2) + "\n")
+    tmp.replace(CONFIG_FILE)
+
+
+def die(msg, code=1):
+    print(f"{APP}: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+# ---------------------------------------------------------------------------
+# Steam / workshop discovery
+# ---------------------------------------------------------------------------
+
+def steam_roots():
+    home = Path.home()
+    candidates = [
+        home / ".steam/steam",
+        home / ".local/share/Steam",
+        home / "snap/steam/common/.local/share/Steam",
+        home / ".var/app/com.valvesoftware.Steam/.local/share/Steam",
+    ]
+    seen, roots = set(), []
+    for c in candidates:
+        if c.exists():
+            r = c.resolve()
+            if r not in seen:
+                seen.add(r)
+                roots.append(r)
+    return roots
+
+
+def steam_libraries():
+    """All steamapps directories, from libraryfolders.vdf of every Steam root."""
+    seen, libs = set(), []
+
+    def add(p):
+        p = Path(p)
+        if p.is_dir():
+            r = p.resolve()
+            if r not in seen:
+                seen.add(r)
+                libs.append(r)
+
+    for root in steam_roots():
+        add(root / "steamapps")
+        vdf = root / "steamapps/libraryfolders.vdf"
+        if vdf.exists():
+            for m in re.finditer(r'"path"\s+"([^"]+)"', vdf.read_text(errors="replace")):
+                add(Path(m.group(1).replace("\\\\", "\\")) / "steamapps")
+    return libs
+
+
+def assets_dir():
+    for lib in steam_libraries():
+        a = lib / "common/wallpaper_engine/assets"
+        if a.is_dir():
+            return a
+    return None
+
+
+def workshop_dirs():
+    return [d for d in (lib / "workshop/content" / WE_APPID for lib in steam_libraries()) if d.is_dir()]
+
+
+def read_project(path):
+    try:
+        return json.loads((Path(path) / "project.json").read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def list_wallpapers():
+    items = {}
+    for wd in workshop_dirs():
+        for d in sorted(wd.iterdir()):
+            if d.name in items or not d.is_dir():
+                continue
+            p = read_project(d)
+            if p is None:
+                continue
+            items[d.name] = {
+                "id": d.name,
+                "path": d,
+                "type": str(p.get("type", "?")).lower(),
+                "title": p.get("title", ""),
+                "file": p.get("file"),
+            }
+    return list(items.values())
+
+
+def resolve_wallpaper(ref):
+    """Turn a workshop id / project dir / video file into a dict describing it."""
+    if ref is None:
+        die("no wallpaper set; run `wwe list` then `wwe set <id>`")
+    ref = str(ref)
+    p = Path(ref).expanduser()
+
+    if p.is_file() and p.suffix.lower() in VIDEO_EXTS:
+        return {"id": p.name, "path": p.parent, "type": "video", "title": p.name, "file": p.name, "video": p}
+
+    if p.is_dir() and (p / "project.json").exists():
+        proj = read_project(p) or {}
+        item = {"id": p.name, "path": p, "type": str(proj.get("type", "?")).lower(),
+                "title": proj.get("title", ""), "file": proj.get("file")}
+    else:
+        item = next((w for w in list_wallpapers() if w["id"] == ref), None)
+        if item is None:
+            die(f"wallpaper '{ref}' not found (not a workshop id, project folder or video file)")
+
+    if item["type"] == "video" and item.get("file"):
+        item["video"] = item["path"] / item["file"]
+    return item
+
+
+# ---------------------------------------------------------------------------
+# display / session detection
+# ---------------------------------------------------------------------------
+
+def detect_backend(cfg):
+    if cfg.get("backend") not in (None, "auto"):
+        return cfg["backend"]
+    desktop = os.environ.get("XDG_CURRENT_DESKTOP", "").upper()
+    if os.environ.get("WAYLAND_DISPLAY") and "GNOME" in desktop:
+        return "gnome"
+    return "layer-shell"
+
+
+def gnome_monitors():
+    """Logical monitors from mutter: list of dicts (x, y, width, height, scale, primary, connector)."""
+    try:
+        import gi
+        gi.require_version("Gio", "2.0")
+        from gi.repository import Gio
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        res = bus.call_sync("org.gnome.Mutter.DisplayConfig", "/org/gnome/Mutter/DisplayConfig",
+                            "org.gnome.Mutter.DisplayConfig", "GetCurrentState",
+                            None, None, Gio.DBusCallFlags.NONE, 2000, None).unpack()
+    except Exception:
+        return []
+
+    _serial, monitors, logical, props = res
+    physical_layout = props.get("layout-mode", 1) == 2
+    modes = {}
+    for (spec, mode_list, _mprops) in monitors:
+        connector = spec[0]
+        for (_mid, w, h, _rate, _pref, _scales, mprops) in mode_list:
+            if mprops.get("is-current"):
+                modes[connector] = (w, h)
+
+    out = []
+    for (x, y, scale, transform, primary, specs, _lprops) in logical:
+        connector = specs[0][0] if specs else "?"
+        w, h = modes.get(connector, (1920, 1080))
+        if transform in (1, 3, 5, 7):  # 90 / 270 degree rotations
+            w, h = h, w
+        if not physical_layout:
+            w, h = round(w / scale), round(h / scale)
+        out.append({"x": x, "y": y, "width": w, "height": h, "scale": scale,
+                    "primary": primary, "connector": connector})
+    out.sort(key=lambda m: (not m["primary"], m["x"], m["y"]))
+    return out
+
+
+def drm_outputs():
+    """Connected outputs from sysfs, named like Wayland outputs (eDP-1, HDMI-A-1, DP-2)."""
+    names = []
+    for status in sorted(Path("/sys/class/drm").glob("card*-*/status")):
+        try:
+            if status.read_text().strip() == "connected":
+                names.append(status.parent.name.split("-", 1)[1])
+        except OSError:
+            pass
+    return names
+
+
+def gnome_extension_state():
+    if not shutil.which("gnome-extensions"):
+        return "unknown"
+    r = subprocess.run(["gnome-extensions", "info", EXTENSION_UUID], capture_output=True, text=True)
+    if r.returncode != 0:
+        return "not-installed"
+    m = re.search(r"(?:State|Enabled):\s*(\S+)", r.stdout)
+    return m.group(1).lower() if m else "unknown"
+
+
+# ---------------------------------------------------------------------------
+# renderer command lines
+# ---------------------------------------------------------------------------
+
+def find_engine(cfg):
+    for c in (cfg.get("engine"),
+              Path.home() / ".local/opt/linux-wallpaperengine/linux-wallpaperengine",
+              shutil.which("linux-wallpaperengine")):
+        if c and Path(c).is_file() and os.access(c, os.X_OK):
+            return str(c)
+    return None
+
+
+def gpu_env(cfg, env):
+    if cfg.get("gpu") == "dgpu":
+        env["__NV_PRIME_RENDER_OFFLOAD"] = "1"
+        env["__GLX_VENDOR_LIBRARY_NAME"] = "nvidia"
+        egl = Path("/usr/share/glvnd/egl_vendor.d/10_nvidia.json")
+        if egl.exists():
+            env["__EGL_VENDOR_LIBRARY_FILENAMES"] = str(egl)
+        env["__VK_LAYER_NV_optimus"] = "NVIDIA_only"
+    return env
+
+
+def engine_common_args(cfg):
+    args = ["--fps", str(cfg["fps"])]
+    if cfg.get("silent"):
+        args.append("--silent")
+    else:
+        args += ["--volume", str(cfg["volume"])]
+    if cfg.get("disable_mouse", True):
+        args.append("--disable-mouse")
+    a = assets_dir()
+    if a:
+        args += ["--assets-dir", str(a)]
+    for k, v in (cfg.get("properties") or {}).items():
+        args += ["--set-property", f"{k}={v}"]
+    return args
+
+
+def build_command(cfg, item, backend):
+    """Return (argv, env) for the renderer."""
+    env = gpu_env(cfg, dict(os.environ))
+    scaling = cfg.get("scaling", "fill")
+
+    if backend == "gnome":
+        mons = gnome_monitors()
+        mon = mons[0] if mons else {"width": 1920, "height": 1080}
+        w, h = mon["width"], mon["height"]
+
+        use_mpv = item["type"] == "video" and cfg.get("video_player", "auto") in ("auto", "mpv") \
+            and shutil.which("mpv") and item.get("video")
+        if use_mpv:
+            argv = ["mpv",
+                    f"--wayland-app-id={VIDEO_APP_ID}", f"--title={VIDEO_APP_ID}",
+                    "--force-window=immediate", f"--geometry={w}x{h}", "--auto-window-resize=no",
+                    "--no-border", "--keepaspect-window=no",
+                    "--loop-file=inf", "--no-osc", "--osd-level=0", "--no-input-default-bindings",
+                    "--input-vo-keyboard=no", "--cursor-autohide=always", "--really-quiet",
+                    "--hwdec=auto-safe", "--stop-screensaver=no"]
+            if scaling == "fill":
+                argv.append("--panscan=1.0")
+            elif scaling == "stretch":
+                argv.append("--keepaspect=no")
+            if cfg.get("silent"):
+                argv.append("--aid=no")
+            else:
+                argv.append(f"--volume={cfg['volume']}")
+            argv.append(str(item["video"]))
+            return argv, env
+
+        engine = find_engine(cfg)
+        if not engine:
+            die("linux-wallpaperengine not found; run scripts/build-engine.sh")
+        argv = [engine, "--window", f"0x0x{w}x{h}", "--scaling", scaling,
+                # GNOME has no fullscreen detection protocol; the extension pauses us instead
+                "--no-fullscreen-pause"]
+        argv += engine_common_args(cfg) + list(cfg.get("extra_args") or []) + [str(item["path"])]
+        return argv, env
+
+    # layer-shell (KDE, wlroots) and X11: linux-wallpaperengine draws on the background itself
+    engine = find_engine(cfg)
+    if not engine:
+        die("linux-wallpaperengine not found; run scripts/build-engine.sh")
+    outputs = drm_outputs() or ["eDP-1"]
+    argv = [engine]
+    for o in outputs:
+        argv += ["--screen-root", o, "--bg", str(item["path"]), "--scaling", scaling]
+    argv += engine_common_args(cfg) + list(cfg.get("extra_args") or [])
+    return argv, env
+
+
+# ---------------------------------------------------------------------------
+# systemd helpers
+# ---------------------------------------------------------------------------
+
+def systemctl(*args, check=False):
+    return subprocess.run(["systemctl", "--user", *args], capture_output=True, text=True, check=check)
+
+
+def service_installed():
+    return systemctl("cat", SERVICE).returncode == 0
+
+
+def apply_now():
+    if service_installed():
+        systemctl("restart", SERVICE)
+        print("wallpaper applied (wwe.service restarted)")
+    else:
+        print("wwe.service not installed; run `wwe run` in a terminal or ./install.sh")
+
+
+# ---------------------------------------------------------------------------
+# commands
+# ---------------------------------------------------------------------------
+
+def cmd_list(args):
+    items = list_wallpapers()
+    if args.type:
+        items = [i for i in items if i["type"] == args.type]
+    if args.json:
+        print(json.dumps([{**i, "path": str(i["path"])} for i in items], indent=2))
+        return
+    if not items:
+        print("no Wallpaper Engine workshop items found (subscribe to some in Steam first)")
+        return
+    current = str(load_config().get("wallpaper"))
+    for i in items:
+        mark = "*" if i["id"] == current else " "
+        print(f"{mark} {i['id']:>12}  {i['type']:<6} {i['title']}")
+
+
+def cmd_set(args):
+    cfg = load_config()
+    item = resolve_wallpaper(args.wallpaper)
+    p = Path(args.wallpaper).expanduser()
+    cfg["wallpaper"] = str(p.resolve()) if p.exists() else str(args.wallpaper)
+    for key in ("fps", "scaling", "volume", "gpu"):
+        v = getattr(args, key, None)
+        if v is not None:
+            cfg[key] = v
+    if args.volume is not None:
+        cfg["silent"] = False
+    if args.silent:
+        cfg["silent"] = True
+    if args.property:
+        props = {}
+        for kv in args.property:
+            k, _, v = kv.partition("=")
+            props[k] = v
+        cfg["properties"] = props
+    elif not args.keep_properties:
+        cfg["properties"] = {}
+    save_config(cfg)
+    print(f"wallpaper: {item['title'] or item['id']} ({item['type']})")
+    apply_now()
+
+
+def cmd_random(args):
+    items = list_wallpapers()
+    if args.type:
+        items = [i for i in items if i["type"] == args.type]
+    if not items:
+        die("no wallpapers found")
+    cfg = load_config()
+    choices = [i for i in items if i["id"] != str(cfg.get("wallpaper"))] or items
+    item = random.choice(choices)
+    cfg["wallpaper"] = item["id"]
+    cfg["properties"] = {}
+    save_config(cfg)
+    print(f"wallpaper: {item['title']} ({item['type']})")
+    apply_now()
+
+
+def cmd_pick(_args):
+    if not shutil.which("zenity"):
+        die("zenity is not installed; use `wwe list` and `wwe set <id>`")
+    items = list_wallpapers()
+    argv = ["zenity", "--list", "--title=Wayland Wallpaper Engine", "--text=Pick a wallpaper",
+            "--width=720", "--height=560", "--column=ID", "--column=Type", "--column=Title",
+            "--print-column=1"]
+    for i in items:
+        argv += [i["id"], i["type"], i["title"] or "-"]
+    r = subprocess.run(argv, capture_output=True, text=True)
+    choice = r.stdout.strip().split("|")[0]
+    if r.returncode != 0 or not choice:
+        return
+    cfg = load_config()
+    cfg["wallpaper"] = choice
+    cfg["properties"] = {}
+    save_config(cfg)
+    apply_now()
+
+
+def cmd_properties(args):
+    cfg = load_config()
+    item = resolve_wallpaper(args.wallpaper or cfg.get("wallpaper"))
+    engine = find_engine(cfg)
+    if not engine:
+        die("linux-wallpaperengine not found")
+    argv = [engine, "--list-properties"]
+    a = assets_dir()
+    if a:
+        argv += ["--assets-dir", str(a)]
+    argv.append(str(item["path"]))
+    subprocess.run(argv)
+
+
+def cmd_run(args):
+    cfg = load_config()
+    if args.wallpaper:
+        cfg["wallpaper"] = args.wallpaper
+    item = resolve_wallpaper(cfg.get("wallpaper"))
+    backend = detect_backend(cfg)
+    argv, env = build_command(cfg, item, backend)
+    print(f"{APP}: backend={backend} type={item['type']} title={item['title']!r}", flush=True)
+    print(f"{APP}: exec {' '.join(argv)}", flush=True)
+    if args.dry_run:
+        return
+    if backend == "gnome" and gnome_extension_state() not in ("enabled", "active"):
+        print(f"{APP}: warning: GNOME extension {EXTENSION_UUID} is not enabled; "
+              "the wallpaper will show up as a normal window", file=sys.stderr, flush=True)
+    # exec so the renderer keeps our pid: systemd tracks it, and the GNOME
+    # extension can SIGSTOP/SIGCONT its process group while something is fullscreen
+    os.execvpe(argv[0], argv, env)
+
+
+def cmd_service(action):
+    def run(_args):
+        r = systemctl(action, SERVICE)
+        if r.stdout:
+            print(r.stdout, end="")
+        if r.returncode != 0:
+            die(r.stderr.strip() or f"systemctl --user {action} {SERVICE} failed")
+    return run
+
+
+def cmd_status(_args):
+    r = systemctl("status", SERVICE, "--no-pager", "-n", "15")
+    print(r.stdout or r.stderr, end="")
+
+
+def cmd_doctor(_args):
+    cfg = load_config()
+    ok = lambda b: "ok  " if b else "FAIL"  # noqa: E731
+    backend = detect_backend(cfg)
+    print(f"session      : {os.environ.get('XDG_SESSION_TYPE', '?')} / {os.environ.get('XDG_CURRENT_DESKTOP', '?')}")
+    print(f"backend      : {backend}")
+    engine = find_engine(cfg)
+    print(f"[{ok(engine)}] engine     : {engine or 'not found (run scripts/build-engine.sh)'}")
+    a = assets_dir()
+    print(f"[{ok(a)}] assets     : {a or 'Wallpaper Engine not installed in Steam (needed for scene wallpapers)'}")
+    n = len(list_wallpapers())
+    print(f"[{ok(n)}] workshop   : {n} items in {', '.join(map(str, workshop_dirs())) or '-'}")
+    mpv = shutil.which("mpv")
+    print(f"[{ok(mpv)}] mpv        : {mpv or 'not installed (needed for video wallpapers on GNOME: sudo apt install mpv)'}")
+    if backend == "gnome":
+        st = gnome_extension_state()
+        print(f"[{ok(st in ('enabled', 'active'))}] extension  : {EXTENSION_UUID} -> {st}")
+        for m in gnome_monitors():
+            print(f"       monitor : {m['connector']} {m['width']}x{m['height']} @ {m['x']},{m['y']} "
+                  f"scale {m['scale']:g}{' (primary)' if m['primary'] else ''}")
+    else:
+        print(f"       outputs : {', '.join(drm_outputs()) or '-'}")
+    print(f"[{ok(service_installed())}] service    : {SERVICE} "
+          f"({systemctl('is-active', SERVICE).stdout.strip() or 'unknown'})")
+    print(f"       config  : {CONFIG_FILE}")
+    print(f"       current : {cfg.get('wallpaper')}")
+
+
+def main():
+    ap = argparse.ArgumentParser(prog=APP, description="Live wallpapers / Wallpaper Engine on Wayland")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("list", help="list Wallpaper Engine workshop items")
+    p.add_argument("--type", choices=["scene", "video", "web"])
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_list)
+
+    p = sub.add_parser("set", help="set the wallpaper (workshop id, project folder or video file)")
+    p.add_argument("wallpaper")
+    p.add_argument("--fps", type=int)
+    p.add_argument("--scaling", choices=["fill", "fit", "stretch", "default"])
+    p.add_argument("--volume", type=int, help="enable sound at this volume (0-100)")
+    p.add_argument("--silent", action="store_true", help="mute the wallpaper")
+    p.add_argument("--gpu", choices=["igpu", "dgpu"])
+    p.add_argument("-p", "--property", action="append", metavar="NAME=VALUE",
+                   help="override a wallpaper property (see `wwe properties`)")
+    p.add_argument("--keep-properties", action="store_true", help="keep previous property overrides")
+    p.set_defaults(func=cmd_set)
+
+    p = sub.add_parser("random", help="switch to a random workshop wallpaper")
+    p.add_argument("--type", choices=["scene", "video", "web"])
+    p.set_defaults(func=cmd_random)
+
+    sub.add_parser("pick", help="choose a wallpaper in a dialog (zenity)").set_defaults(func=cmd_pick)
+
+    p = sub.add_parser("properties", help="list the configurable properties of a wallpaper")
+    p.add_argument("wallpaper", nargs="?")
+    p.set_defaults(func=cmd_properties)
+
+    p = sub.add_parser("run", help="run the renderer in the foreground (used by wwe.service)")
+    p.add_argument("wallpaper", nargs="?")
+    p.add_argument("--dry-run", action="store_true", help="print the command instead of running it")
+    p.set_defaults(func=cmd_run)
+
+    for action in ("start", "stop", "restart"):
+        sub.add_parser(action, help=f"{action} wwe.service").set_defaults(func=cmd_service(action))
+    sub.add_parser("status", help="show wwe.service status").set_defaults(func=cmd_status)
+    sub.add_parser("doctor", help="check the setup").set_defaults(func=cmd_doctor)
+
+    args = ap.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()
