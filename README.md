@@ -86,7 +86,7 @@ Logs: `journalctl --user -u wwe -f`
 | `volume` | `50` | 0–100 |
 | `silent` | `false` | mute the wallpaper |
 | `pause` | `focus` | GNOME: `focus` plays only while the desktop is focused; `fullscreen` pauses only for fullscreen windows; `never` |
-| `audio_processing` | `auto` | audio visualiser input for wallpapers that react to music. It records what your speakers play, so GNOME shows the microphone indicator meanwhile. `auto` = only for wallpapers that declare it, `false` = never |
+| `audio_processing` | `false` | audio visualiser input for wallpapers that react to music. It records what your speakers play, so GNOME shows the microphone indicator meanwhile; off by default. `auto` = only for wallpapers that declare it, `true` = always |
 | `automute` | `false` | also mute while another app plays sound |
 | `disable_mouse` | `false` | no mouse interaction |
 | `scaling` | `fill` | `fill`, `fit`, `stretch`, `default` |

@@ -51,7 +51,7 @@ DEFAULT_CONFIG = {
     "silent": False,
     "volume": 50,              # 0-100
     "automute": False,         # also mute while other apps play audio
-    "audio_processing": "auto",  # auto (only audio-responsive wallpapers) | true | false
+    "audio_processing": False,  # false | auto (only audio-responsive wallpapers) | true
     "pause": "focus",          # GNOME: focus (play only on the desktop) | fullscreen | never
     "scaling": "fill",         # fill | fit | stretch | default
     "gpu": "igpu",             # igpu | dgpu (NVIDIA PRIME offload)
@@ -79,9 +79,11 @@ def load_config():
 
 
 def save_config(cfg):
+    # only what differs from the defaults, so changed defaults reach existing users
+    changed = {k: v for k, v in cfg.items() if k not in DEFAULT_CONFIG or DEFAULT_CONFIG[k] != v}
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     tmp = CONFIG_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(cfg, indent=2) + "\n")
+    tmp.write_text(json.dumps(changed, indent=2) + "\n")
     tmp.replace(CONFIG_FILE)
 
 
@@ -389,9 +391,10 @@ def volume_percent(cfg):
 
 
 def audio_processing_enabled(cfg, item):
-    """The visualiser input records what the speakers play (GNOME shows the
-    microphone indicator meanwhile), so only run it for wallpapers that use it."""
-    setting = cfg.get("audio_processing", "auto")
+    """The visualiser input records what the speakers play, and GNOME shows the
+    microphone indicator meanwhile, so it is opt-in: off by default, "auto" runs
+    it only for wallpapers that use it."""
+    setting = cfg.get("audio_processing", False)
     if setting in (True, "true", "on"):
         return True
     if setting in (False, "false", "off"):

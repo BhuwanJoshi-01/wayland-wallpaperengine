@@ -73,7 +73,7 @@ The extension polls `global.get_pointer()` about 60 times a second while a scene
 
 - It polls the mtime of the wwe config and of Wallpaper Engine's `config.json` once a second. When the resulting command changes, it restarts the renderer. If only the volume changed, it sends `V` (engine) or an mpv IPC command instead.
 - Crashes restart the renderer up to 3 times per minute; after that it waits for a different wallpaper.
-- `audio_processing=auto` passes `--no-audio-processing` unless the wallpaper's `project.json` has `general.supportsaudioprocessing`. The visualiser input records the speaker monitor, which GNOME shows as microphone use.
+- The audio visualiser input records the speaker monitor, which GNOME shows as microphone use, so `--no-audio-processing` is passed by default. With `audio_processing=auto` it is enabled for wallpapers whose `project.json` has `general.supportsaudioprocessing`; with `true` for all.
 
 Backend selection:
 

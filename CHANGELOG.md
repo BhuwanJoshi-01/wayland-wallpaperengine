@@ -11,6 +11,6 @@ First public release.
 - Pauses the renderer (SIGSTOP) while an app is focused, the overview or lock screen is open, or a window is fullscreen.
 - Top bar wallpaper picker with thumbnails, search, volume, random, pause switch and Steam Workshop link.
 - `wwe` CLI: list, set, random, pick, properties, config, sync, doctor, service control; supervisor with crash handling.
-- Audio visualiser input only for wallpapers that use it (`audio_processing=auto`).
+- Audio visualiser input (records the speaker output; GNOME shows it as microphone use) is opt-in: `audio_processing=auto` enables it for wallpapers that use it.
 - One-command installer with dependency handling for apt, dnf, pacman and zypper.
 - Engine install layout fix for web wallpapers (CEF aborted when `icudtl.dat` was next to `libcef.so`).
