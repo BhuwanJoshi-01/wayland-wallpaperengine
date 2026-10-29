@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping. The most useful contributions right now:
+Thanks for helping! By participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md). The most useful contributions right now:
 
 - **Testing** on other distributions (Fedora, Arch, openSUSE), GNOME versions (46–49) and compositors (KDE Plasma, Hyprland, Sway). Open an issue with the result, even when everything works.
 - **Bug reports** with `wwe doctor` output and the log (see [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)).

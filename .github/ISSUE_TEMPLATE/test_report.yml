@@ -1,0 +1,40 @@
+name: Test report
+description: Tell us it works (or not) on your system; this helps a lot
+labels: [test-report]
+body:
+  - type: input
+    id: system
+    attributes:
+      label: Distribution and version
+      placeholder: e.g. Arch Linux, Ubuntu 24.04
+    validations:
+      required: true
+  - type: input
+    id: desktop
+    attributes:
+      label: Desktop and version
+      placeholder: e.g. GNOME 47.2, KDE Plasma 6.3, Hyprland 0.50
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU and driver
+      placeholder: e.g. Intel Iris Xe (Mesa 26), NVIDIA RTX 3050 (595)
+  - type: checkboxes
+    id: works
+    attributes:
+      label: What works?
+      options:
+        - label: Installer (one command)
+        - label: Scene wallpapers
+        - label: Web wallpapers
+        - label: Video wallpapers
+        - label: Mouse interaction
+        - label: Sound on the desktop
+        - label: Pausing when an app is focused
+        - label: Top bar picker
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes, problems, wrong package names

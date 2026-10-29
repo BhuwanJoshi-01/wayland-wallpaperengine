@@ -1,0 +1,39 @@
+name: Bug report
+description: Something does not work
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for reporting! Please run `wwe doctor` first; it catches most setup problems.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `wwe doctor`
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: "`journalctl --user -u wwe -b --no-pager | tail -50`, and for extension problems `journalctl -b /usr/bin/gnome-shell | grep -i wallpaper`"
+      render: text
+  - type: input
+    id: system
+    attributes:
+      label: Distribution and desktop
+      placeholder: e.g. Fedora 44, GNOME 50.1 (gnome-shell --version)
+    validations:
+      required: true
+  - type: input
+    id: wallpaper
+    attributes:
+      label: Wallpaper
+      description: Workshop id and type (scene, web, video), if the problem is specific to one wallpaper

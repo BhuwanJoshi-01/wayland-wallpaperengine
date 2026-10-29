@@ -137,7 +137,7 @@ See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). Start with `wwe doctor`.
 
 ## Contributing
 
-Bug reports, testing on other distributions and desktops, and pull requests are very welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Bug reports, testing on other distributions and desktops (there is a [test report](https://github.com/BhuwanJoshi-01/wayland-wallpaperengine/issues/new?template=test_report.yml) form), and pull requests are very welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md). Security issues: see [SECURITY.md](SECURITY.md). Accessibility: [ACCESSIBILITY.md](ACCESSIBILITY.md).
 
 ## Credits
 

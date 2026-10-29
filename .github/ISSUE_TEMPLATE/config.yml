@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Troubleshooting guide
+    url: https://github.com/BhuwanJoshi-01/wayland-wallpaperengine/blob/main/docs/TROUBLESHOOTING.md
+    about: Common problems and fixes
+  - name: Security vulnerability
+    url: https://github.com/BhuwanJoshi-01/wayland-wallpaperengine/security/advisories/new
+    about: Please report security issues privately
