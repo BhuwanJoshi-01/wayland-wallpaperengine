@@ -30,6 +30,7 @@ import * as WindowManager from 'resource:///org/gnome/shell/ui/windowManager.js'
 import * as Workspace from 'resource:///org/gnome/shell/ui/workspace.js';
 import * as WorkspaceThumbnail from 'resource:///org/gnome/shell/ui/workspaceThumbnail.js';
 
+import {CloneHolder} from './background-clone.js';
 import {InputBridge} from './input.js';
 import {WallpaperMenu} from './picker.js';
 
@@ -49,20 +50,23 @@ function hasContent(actor) {
     return ok && width > 0 && height > 0;
 }
 
-// Container for the clone inside a Meta.BackgroundActor. It reports no
-// preferred size: overview backgrounds size themselves height-for-width (to
-// keep the monitor's shape), and a child with a real size would override that
-// and squash the workspace previews.
-const CloneHolder = GObject.registerClass(
-class CloneHolder extends Clutter.Actor {
-    vfunc_get_preferred_width(_forHeight) {
-        return [0, 0];
-    }
+const SURFACE_ACTOR_TYPE = GObject.type_from_name('MetaSurfaceActor');
 
-    vfunc_get_preferred_height(_forWidth) {
-        return [0, 0];
-    }
-});
+// The renderer's main surface: the largest visible surface actor. Cloning it
+// instead of the whole window actor leaves out whatever mutter draws around
+// the client's buffer, e.g. the black background (and centring offset) it adds
+// to fullscreen windows whose buffer does not fill the monitor.
+function contentActor(windowActor) {
+    let best = null;
+    const walk = actor => {
+        if (actor.visible && GObject.type_is_a(actor.constructor.$gtype, SURFACE_ACTOR_TYPE) &&
+            actor.width * actor.height > (best ? best.width * best.height : 0))
+            best = actor;
+        actor.get_children().forEach(child => walk(child));
+    };
+    walk(windowActor);
+    return best ?? windowActor;
+}
 
 // Accepts a Meta.Window or a Meta.WindowActor (some shell code, e.g.
 // WorkspaceThumbnail._isOverviewWindow, passes actors).
@@ -219,10 +223,10 @@ export default class WaylandWallpaperEngine extends Extension {
 
         // The window may be on screen briefly (until its first frame, see
         // _hide). Make sure it can never get in the way: bottom of the stack,
-        // invisible, click-through, and never fullscreen (a fullscreen window
-        // hides panels and docks).
+        // invisible, click-through, and not fullscreen while visible (that
+        // hides panels and docks; minimized and fullscreen is fine).
         win.stick();
-        if (win.is_fullscreen())
+        if (win.is_fullscreen() && !win.minimized)
             win.unmake_fullscreen();
         win.lower();
         this._makeInputTransparent(win);
@@ -302,12 +306,23 @@ export default class WaylandWallpaperEngine extends Extension {
             this._cancelContentWait(win);
             if (!win.minimized)
                 win.minimize();
+            // Only now, while minimized: GNOME keeps resizing and moving a
+            // normal window whenever the usable area changes (panels, lock
+            // screen), which makes the wallpaper jump and leaves black bands.
+            // Fullscreen windows always get the whole monitor, and a minimized
+            // one does not count as fullscreen (panels stay visible).
+            if (!win.is_fullscreen())
+                win.make_fullscreen();
+            this._refreshClones();
             return;
         }
 
         // needs to be mapped once to get a buffer; harmless while waiting
-        // (below everything, opacity 0, click-through)
+        // (below everything, opacity 0, click-through) - but never while
+        // fullscreen, which would hide panels and docks
         this._makeInputTransparent(win);
+        if (win.is_fullscreen())
+            win.unmake_fullscreen();
         if (win.minimized)
             win.unminimize();
         if (this._contentWaits.has(win))
@@ -315,8 +330,7 @@ export default class WaylandWallpaperEngine extends Extension {
         this._contentWaits.set(win, GLib.timeout_add(GLib.PRIORITY_DEFAULT, CONTENT_POLL_MS, () => {
             if (hasContent(actor)) {
                 this._contentWaits.delete(win);
-                if (!win.minimized)
-                    win.minimize();
+                this._hide(win);
                 this._refreshClones();
                 return GLib.SOURCE_REMOVE;
             }
@@ -380,25 +394,21 @@ export default class WaylandWallpaperEngine extends Extension {
             .map(win => [win, win.get_compositor_private()])
             .filter(([, actor]) => actor);
         const match = candidates.find(([win]) => win.get_monitor() === monitor) ?? candidates[0];
-        return match ? match[1] : null;
+        return match ? contentActor(match[1]) : null;
     }
 
     _attachHolder(backgroundActor) {
         // the clone is laid out by hand (cover scaling), so it must not drive
         // the holder's size: the holder just fills the background actor
         const holder = new CloneHolder({
-            layout_manager: new Clutter.FixedLayout(),
             x_expand: true,
             y_expand: true,
             reactive: false,
             clip_to_allocation: true,
         });
-        const clone = new Clutter.Clone({reactive: false});
-        holder.add_child(clone);
-        holder._wpeClone = clone;
+        holder._wpeClone = holder.clone;
         holder._wpeMonitor = backgroundActor.monitor;
         holder._wpeSourceIds = [];
-        holder.connect('notify::allocation', () => this._layoutClone(holder));
 
         backgroundActor.layout_manager = new Clutter.BinLayout();
         backgroundActor.add_child(holder);
@@ -420,13 +430,13 @@ export default class WaylandWallpaperEngine extends Extension {
             if (source) {
                 holder._wpeSourceRef = source;
                 holder._wpeSourceIds = [
-                    source.connect('notify::width', () => this._layoutClone(holder)),
-                    source.connect('notify::height', () => this._layoutClone(holder)),
+                    source.connect('notify::width', () => holder.queue_relayout()),
+                    source.connect('notify::height', () => holder.queue_relayout()),
                 ];
             }
         }
         holder.visible = source !== null;
-        this._layoutClone(holder);
+        holder.queue_relayout();
     }
 
     _untrackSource(holder) {
@@ -434,28 +444,6 @@ export default class WaylandWallpaperEngine extends Extension {
             holder._wpeSourceRef?.disconnect(id);
         holder._wpeSourceIds = [];
         holder._wpeSourceRef = null;
-    }
-
-    // Like CSS background-size: cover. A renderer window is not always exactly
-    // monitor sized (GNOME keeps resizable windows such as mpv above panels),
-    // so scale uniformly and crop instead of stretching.
-    _layoutClone(holder) {
-        const clone = holder._wpeClone;
-        const box = holder.get_allocation_box();
-        const [hw, hh] = [box.get_width(), box.get_height()];
-        const source = clone.source;
-        if (!source || hw <= 0 || hh <= 0)
-            return;
-        const [sw, sh] = [source.width, source.height];
-        if (sw <= 0 || sh <= 0) {
-            clone.set_position(0, 0);
-            clone.set_size(hw, hh);
-            return;
-        }
-        const scale = Math.max(hw / sw, hh / sh);
-        const [w, h] = [Math.ceil(sw * scale), Math.ceil(sh * scale)];
-        clone.set_position(Math.floor((hw - w) / 2), Math.floor((hh - h) / 2));
-        clone.set_size(w, h);
     }
 
     _refreshClones() {
