@@ -246,7 +246,7 @@ def gnome_extension_state():
     r = subprocess.run(["gnome-extensions", "info", EXTENSION_UUID], capture_output=True, text=True)
     if r.returncode != 0:
         return "not-installed"
-    m = re.search(r"(?:State|Enabled):\s*(\S+)", r.stdout)
+    m = re.search(r"State:\s*(\S+)", r.stdout)
     return m.group(1).lower() if m else "unknown"
 
 
@@ -281,7 +281,9 @@ def engine_common_args(cfg):
     else:
         args += ["--volume", str(cfg["volume"])]
     if cfg.get("disable_mouse", True):
-        args.append("--disable-mouse")
+        # without mouse input, camera parallax parks the camera off-centre and
+        # exposes the scene's clear colour along two edges
+        args += ["--disable-mouse", "--disable-parallax"]
     a = assets_dir()
     if a:
         args += ["--assets-dir", str(a)]

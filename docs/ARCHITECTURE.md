@@ -20,13 +20,16 @@ The only code that controls the background in GNOME is GNOME Shell itself, so th
    - linux-wallpaperengine: `--window 0x0xWxH`. Our patch gives it the Wayland `app_id` `linux-wallpaperengine`.
    - mpv: `--wayland-app-id=wwe-video`.
 2. The extension watches `window-created` and recognizes renderer windows by `app_id`. It falls back to the title `wallpaperengine` for unpatched engine builds.
-3. Renderer windows are made sticky and kept minimized. Minimizing is also re-applied on `shown` and `notify::minimized`. Several shell entry points filter them out:
+3. Renderer windows are made sticky and fullscreen, then kept minimized. Minimizing is also re-applied on `shown` and `notify::minimized`.
+   - **Fullscreen:** a normal window gets shrunk to the work area (screen minus panels), and the renderer then draws a smaller frame. A minimized fullscreen window doesn't count for `get_monitor_in_fullscreen`, so panels and notifications are unaffected.
+   - **Minimize only after the first frame:** a window minimized before its first buffer never gets one, and the clone paints nothing. The extension waits until `get_texture().get_preferred_size()` reports content; until then the window actor has opacity 0, which clones ignore.
+   - Several shell entry points filter renderer windows out:
    - `Shell.Global.get_window_actors`, `Meta.Display.get_tab_list`
    - `Workspace._isOverviewWindow`, `WorkspaceThumbnail._isOverviewWindow`
    - `Shell.WindowTracker.get_window_app`, `Shell.App.get_windows/get_n_windows`, `Shell.AppSystem.get_running` (docks and dash-to-panel)
    - `WindowManager._shouldAnimateActor` (no minimize animation)
 4. `BackgroundManager._createBackgroundActor` is wrapped, so every `Meta.BackgroundActor` gets a child `Clutter.Clone` whose source is the renderer's `Meta.WindowActor`. A clone paints its source even when the source is hidden, and mutter still sends frame callbacks to a surface that is painted only through a clone. The renderer therefore keeps animating while minimized.
-5. When `display.get_monitor_in_fullscreen(i)` is true for any monitor, the renderer's process group gets `SIGSTOP`. Because systemd starts `wwe run` as a session leader and it `exec`s, the group is the renderer plus its CEF helpers. It gets `SIGCONT` when fullscreen ends and when the extension is disabled.
+5. When any other (non-renderer) window on the current workspace is fullscreen and not minimized, the renderer's process group gets `SIGSTOP`. Because systemd starts `wwe run` as a session leader and it `exec`s, the group is the renderer plus its CEF helpers. It gets `SIGCONT` when fullscreen ends and when the extension is disabled.
 
 ## Backend selection (`wwe run`)
 

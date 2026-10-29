@@ -32,8 +32,21 @@ import * as WorkspaceThumbnail from 'resource:///org/gnome/shell/ui/workspaceThu
 const APP_IDS = new Set(['linux-wallpaperengine', 'wwe-video']);
 const FALLBACK_TITLE = 'wallpaperengine';
 
+// how often / how long to wait for a renderer's first frame before minimizing it
+const CONTENT_POLL_MS = 100;
+const CONTENT_POLL_MAX = 150;
+
+function hasContent(actor) {
+    const [ok, width, height] = actor.get_texture()?.get_preferred_size() ?? [false, 0, 0];
+    return ok && width > 0 && height > 0;
+}
+
+// Accepts a Meta.Window or a Meta.WindowActor (some shell code, e.g.
+// WorkspaceThumbnail._isOverviewWindow, passes actors).
 function isRenderer(win) {
-    if (!win)
+    if (win instanceof Meta.WindowActor)
+        win = win.meta_window;
+    if (!(win instanceof Meta.Window))
         return false;
     const wmClass = win.get_wm_class();
     if (wmClass)
@@ -48,6 +61,7 @@ export default class WaylandWallpaperEngine extends Extension {
         this._renderers = new Map(); // Meta.Window -> signal ids
         this._watched = new Map(); // Meta.Window -> signal ids (waiting for app_id/title)
         this._stoppedPids = new Set();
+        this._contentWaits = new Map(); // Meta.Window -> GLib source id
         this._getAllWindowActors = () => global.get_window_actors();
 
         this._installOverrides();
@@ -56,6 +70,8 @@ export default class WaylandWallpaperEngine extends Extension {
             global.display.connect('window-created', (_display, win) => this._onWindowCreated(win)),
             global.display.connect('in-fullscreen-changed', () => this._updatePause()),
         ];
+        this._workspaceSignal = global.workspace_manager.connect('active-workspace-changed',
+            () => this._updatePause());
 
         for (const actor of this._getAllWindowActors())
             this._onWindowCreated(actor.meta_window);
@@ -67,6 +83,11 @@ export default class WaylandWallpaperEngine extends Extension {
         for (const id of this._displaySignals)
             global.display.disconnect(id);
         this._displaySignals = [];
+        global.workspace_manager.disconnect(this._workspaceSignal);
+
+        for (const id of this._contentWaits.values())
+            GLib.source_remove(id);
+        this._contentWaits.clear();
 
         for (const [win, ids] of this._watched)
             ids.forEach(id => win.disconnect(id));
@@ -145,6 +166,12 @@ export default class WaylandWallpaperEngine extends Extension {
         ]);
 
         win.stick();
+        // A normal window gets shrunk to the work area (minus panels) and the
+        // renderer then draws a smaller frame than the monitor; fullscreen
+        // windows are exempt. Minimized windows do not count for "monitor in
+        // fullscreen", so this does not hide panels or mute notifications.
+        if (!win.is_fullscreen())
+            win.make_fullscreen();
         this._hide(win);
 
         if (win.get_compositor_private()) {
@@ -165,15 +192,54 @@ export default class WaylandWallpaperEngine extends Extension {
         ids.forEach(id => win.disconnect(id));
         this._renderers.delete(win);
 
+        this._cancelContentWait(win);
+
         const pid = win.get_pid();
         this._stoppedPids.delete(pid);
 
         this._refreshClones();
     }
 
+    // Mutter keeps the last buffer of a minimized window, so the clones keep
+    // showing (and animating) it. A window minimized before its first frame
+    // never gets a buffer at all, so minimize only once the surface has content.
     _hide(win) {
-        if (!win.minimized)
-            win.minimize();
+        const actor = win.get_compositor_private();
+        if (!actor)
+            return;
+        // invisible while briefly shown; clones paint with their own opacity
+        actor.opacity = 0;
+
+        if (hasContent(actor)) {
+            this._cancelContentWait(win);
+            if (!win.minimized)
+                win.minimize();
+            return;
+        }
+
+        if (win.minimized)
+            win.unminimize();
+        if (this._contentWaits.has(win))
+            return;
+        let tries = 0;
+        this._contentWaits.set(win, GLib.timeout_add(GLib.PRIORITY_DEFAULT, CONTENT_POLL_MS, () => {
+            if (hasContent(actor) || ++tries >= CONTENT_POLL_MAX) {
+                this._contentWaits.delete(win);
+                if (!win.minimized)
+                    win.minimize();
+                this._refreshClones();
+                return GLib.SOURCE_REMOVE;
+            }
+            return GLib.SOURCE_CONTINUE;
+        }));
+    }
+
+    _cancelContentWait(win) {
+        const id = this._contentWaits.get(win);
+        if (id) {
+            GLib.source_remove(id);
+            this._contentWaits.delete(win);
+        }
     }
 
     // ------------------------------------------------------------------
@@ -181,12 +247,11 @@ export default class WaylandWallpaperEngine extends Extension {
     // ------------------------------------------------------------------
 
     _updatePause() {
-        let fullscreen = false;
-        const nMonitors = global.display.get_n_monitors();
-        for (let i = 0; i < nMonitors; i++) {
-            if (global.display.get_monitor_in_fullscreen(i))
-                fullscreen = true;
-        }
+        // our own renderer windows are fullscreen too; only other visible
+        // fullscreen windows on the current workspace count
+        const workspace = global.workspace_manager.get_active_workspace();
+        const fullscreen = global.display.list_all_windows().some(w =>
+            !isRenderer(w) && w.is_fullscreen() && !w.minimized && w.located_on_workspace(workspace));
 
         for (const win of this._renderers.keys()) {
             const pid = win.get_pid();
@@ -311,6 +376,13 @@ export default class WaylandWallpaperEngine extends Extension {
         inj.overrideMethod(WorkspaceThumbnail.WorkspaceThumbnail.prototype, '_isOverviewWindow',
             original => function (win) {
                 return isRenderer(win) ? false : original.call(this, win);
+            });
+
+        // Wayland clients cannot set skip-taskbar themselves. Shell code that asks
+        // (window attention notifications, docks) then ignores the renderer.
+        inj.overrideMethod(Meta.Window.prototype, 'is_skip_taskbar',
+            original => function () {
+                return isRenderer(this) || original.call(this);
             });
 
         inj.overrideMethod(Meta.Display.prototype, 'get_tab_list',
