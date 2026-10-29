@@ -19,6 +19,7 @@
 
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
+import GObject from 'gi://GObject';
 import Meta from 'gi://Meta';
 import Shell from 'gi://Shell';
 
@@ -47,6 +48,21 @@ function hasContent(actor) {
     const [ok, width, height] = actor.get_texture()?.get_preferred_size() ?? [false, 0, 0];
     return ok && width > 0 && height > 0;
 }
+
+// Container for the clone inside a Meta.BackgroundActor. It reports no
+// preferred size: overview backgrounds size themselves height-for-width (to
+// keep the monitor's shape), and a child with a real size would override that
+// and squash the workspace previews.
+const CloneHolder = GObject.registerClass(
+class CloneHolder extends Clutter.Actor {
+    vfunc_get_preferred_width(_forHeight) {
+        return [0, 0];
+    }
+
+    vfunc_get_preferred_height(_forWidth) {
+        return [0, 0];
+    }
+});
 
 // Accepts a Meta.Window or a Meta.WindowActor (some shell code, e.g.
 // WorkspaceThumbnail._isOverviewWindow, passes actors).
@@ -370,7 +386,8 @@ export default class WaylandWallpaperEngine extends Extension {
     _attachHolder(backgroundActor) {
         // the clone is laid out by hand (cover scaling), so it must not drive
         // the holder's size: the holder just fills the background actor
-        const holder = new Clutter.Actor({
+        const holder = new CloneHolder({
+            layout_manager: new Clutter.FixedLayout(),
             x_expand: true,
             y_expand: true,
             reactive: false,
