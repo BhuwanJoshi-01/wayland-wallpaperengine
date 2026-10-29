@@ -35,7 +35,7 @@ die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 ask() { # ask <question>: true for yes (default yes, reads the terminal even when piped)
     ((ASSUME_YES)) && return 0
-    [[ -r /dev/tty ]] || return 1
+    { true </dev/tty; } 2>/dev/null || return 1
     local reply
     read -r -p "$1 [Y/n] " reply </dev/tty || return 1
     [[ -z "$reply" || "$reply" =~ ^[Yy] ]]

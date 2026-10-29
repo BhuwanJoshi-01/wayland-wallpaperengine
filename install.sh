@@ -37,11 +37,11 @@ if [[ -z "$SELF" || ! -f "$(dirname "$SELF")/bin/wwe" ]]; then
         mkdir -p "$(dirname "$SRC")"
         git clone --quiet --depth 1 "$REPO_URL" "$SRC"
     fi
-    # read prompts from the terminal, not from the curl pipe
-    if [[ -r /dev/tty ]]; then
+    # read prompts from the terminal, not from the curl pipe (if there is one)
+    if { true </dev/tty; } 2>/dev/null; then
         exec bash "$SRC/install.sh" "$@" </dev/tty
     fi
-    exec bash "$SRC/install.sh" "$@"
+    exec bash "$SRC/install.sh" "$@" </dev/null
 fi
 
 REPO_DIR="$(cd "$(dirname "$SELF")" && pwd)"
