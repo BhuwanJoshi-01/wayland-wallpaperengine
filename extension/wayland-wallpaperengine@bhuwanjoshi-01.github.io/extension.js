@@ -196,16 +196,21 @@ export default class WaylandWallpaperEngine extends Extension {
         this._renderers.set(win, [
             win.connect('notify::minimized', () => this._hide(win)),
             win.connect_after('shown', () => this._hide(win)),
+            win.connect('focus', () => this._giveAwayFocus(win)),
             win.connect('unmanaged', () => this._unmanage(win)),
         ]);
 
+        // The window may be on screen briefly (until its first frame, see
+        // _hide). Make sure it can never get in the way: bottom of the stack,
+        // invisible, click-through, and never fullscreen (a fullscreen window
+        // hides panels and docks).
         win.stick();
-        // A normal window gets shrunk to the work area (minus panels) and the
-        // renderer then draws a smaller frame than the monitor; fullscreen
-        // windows are exempt. Minimized windows do not count for "monitor in
-        // fullscreen", so this does not hide panels or mute notifications.
-        if (!win.is_fullscreen())
-            win.make_fullscreen();
+        if (win.is_fullscreen())
+            win.unmake_fullscreen();
+        win.make_below();
+        this._makeInputTransparent(win);
+        if (win.has_focus())
+            this._giveAwayFocus(win);
         this._hide(win);
 
         if (win.get_compositor_private()) {
@@ -236,6 +241,36 @@ export default class WaylandWallpaperEngine extends Extension {
         this._input.update();
     }
 
+    // Picking skips non-reactive actors, so pointer input falls through to
+    // whatever is below (desktop icons, the background).
+    _makeInputTransparent(win) {
+        const actor = win.get_compositor_private();
+        if (!actor)
+            return;
+        const walk = a => {
+            a.reactive = false;
+            for (const child of a.get_children())
+                walk(child);
+        };
+        walk(actor);
+        // surface actors can be added later (e.g. subsurfaces)
+        if (!actor._wweChildAddedId) {
+            actor._wweChildAddedId = actor.connect('child-added', (_a, child) => walk(child));
+            actor.get_first_child()?.connect('child-added', (_a, child) => walk(child));
+        }
+    }
+
+    _giveAwayFocus(win) {
+        const time = global.get_current_time();
+        // get_tab_list is overridden to leave out renderer windows
+        const next = global.display.get_tab_list(Meta.TabList.NORMAL_ALL, null)
+            .find(w => w !== win && !w.minimized);
+        if (next)
+            next.activate(time);
+        else
+            global.display.unset_input_focus(time);
+    }
+
     // Mutter keeps the last buffer of a minimized window, so the clones keep
     // showing (and animating) it. A window minimized before its first frame
     // never gets a buffer at all, so minimize only once the surface has content.
@@ -253,6 +288,9 @@ export default class WaylandWallpaperEngine extends Extension {
             return;
         }
 
+        // needs to be mapped once to get a buffer; harmless while waiting
+        // (below everything, opacity 0, click-through)
+        this._makeInputTransparent(win);
         if (win.minimized)
             win.unminimize();
         if (this._contentWaits.has(win))

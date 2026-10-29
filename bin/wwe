@@ -415,7 +415,7 @@ def build_command(cfg, item, backend, properties):
                     "--force-window=immediate", f"--geometry={w}x{h}", "--auto-window-resize=no",
                     "--no-border", "--keepaspect-window=no",
                     "--loop-file=inf", "--no-osc", "--osd-level=0", "--no-input-default-bindings",
-                    "--input-vo-keyboard=no", "--cursor-autohide=always", "--really-quiet",
+                    "--input-vo-keyboard=no", "--cursor-autohide=no", "--really-quiet",
                     "--hwdec=auto-safe", "--stop-screensaver=no",
                     # the extension mutes us while the desktop is not focused
                     f"--input-ipc-server={MPV_SOCKET}"]
