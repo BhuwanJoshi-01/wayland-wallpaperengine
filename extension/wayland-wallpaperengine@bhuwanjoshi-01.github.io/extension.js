@@ -8,8 +8,9 @@
 //   1. keeps that window minimized and hidden from overview / alt-tab / docks,
 //   2. paints a live Clutter.Clone of it inside every background actor
 //      (desktop, overview workspaces, lock screen),
-//   3. SIGSTOPs the renderer while another window is fullscreen (games,
-//      videos) and SIGCONTs it afterwards,
+//   3. SIGSTOPs the renderer while it is not being looked at (by default:
+//      whenever an app has focus, plus fullscreen windows and the lock
+//      screen) and SIGCONTs it afterwards,
 //   4. forwards the pointer and plays wallpaper audio only while the desktop
 //      is focused (input.js),
 //   5. adds a top bar wallpaper picker (picker.js).
@@ -19,6 +20,7 @@
 
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
+import Gio from 'gi://Gio';
 import GObject from 'gi://GObject';
 import Meta from 'gi://Meta';
 import Shell from 'gi://Shell';
@@ -31,7 +33,7 @@ import * as Workspace from 'resource:///org/gnome/shell/ui/workspace.js';
 import * as WorkspaceThumbnail from 'resource:///org/gnome/shell/ui/workspaceThumbnail.js';
 
 import {CloneHolder} from './background-clone.js';
-import {InputBridge} from './input.js';
+import {InputBridge, isDesktopWindow} from './input.js';
 import {WallpaperMenu} from './picker.js';
 
 // Wayland app_ids of renderer windows: the patched linux-wallpaperengine build
@@ -52,6 +54,14 @@ function hasContent(actor) {
 
 const SURFACE_ACTOR_TYPE = GObject.type_from_name('MetaSurfaceActor');
 
+// wwe's config; the extension only reads "pause":
+//   "focus"      (default) play only while the desktop is focused, like
+//                Wallpaper Engine's "pause when another application is focused"
+//   "fullscreen" pause only while another window is fullscreen
+//   "never"
+const CONFIG_PATH = GLib.build_filenamev([GLib.get_user_config_dir(), 'wwe', 'config.json']);
+const PAUSE_MODES = new Set(['focus', 'fullscreen', 'never']);
+
 // The renderer's main surface: the largest visible surface actor. Cloning it
 // instead of the whole window actor leaves out whatever mutter draws around
 // the client's buffer, e.g. the black background (and centring offset) it adds
@@ -66,6 +76,15 @@ function contentActor(windowActor) {
     };
     walk(windowActor);
     return best ?? windowActor;
+}
+
+// The desktop is what the user is looking at: nothing or the desktop itself
+// focused, outside the overview and lock screen. Drives audio and pausing.
+function desktopActive() {
+    if (Main.sessionMode.isLocked || Main.overview.visible)
+        return false;
+    const focus = global.display.focus_window;
+    return !focus || isDesktopWindow(focus) || isRenderer(focus);
 }
 
 // Accepts a Meta.Window or a Meta.WindowActor (some shell code, e.g.
@@ -95,7 +114,7 @@ export default class WaylandWallpaperEngine extends Extension {
 
         this._input = new InputBridge({
             getRenderers: () => [...this._renderers.keys()],
-            isRenderer,
+            desktopActive,
         });
         this._input.enable();
 
@@ -103,12 +122,28 @@ export default class WaylandWallpaperEngine extends Extension {
         // the picker must never be usable there
         this._menu = new WallpaperMenu();
         Main.panel.addToStatusArea(this.uuid, this._menu);
-        this._sessionSignal = Main.sessionMode.connect('updated', () => this._syncMenuVisibility());
+        this._sessionSignal = Main.sessionMode.connect('updated', () => {
+            this._syncMenuVisibility();
+            this._updatePause();
+        });
         this._syncMenuVisibility();
+
+        this._loadConfig();
+        this._configMonitor = Gio.File.new_for_path(CONFIG_PATH)
+            .monitor_file(Gio.FileMonitorFlags.WATCH_MOVES, null);
+        this._configMonitor.connect('changed', () => {
+            this._loadConfig();
+            this._updatePause();
+        });
 
         this._displaySignals = [
             global.display.connect('window-created', (_display, win) => this._onWindowCreated(win)),
             global.display.connect('in-fullscreen-changed', () => this._updatePause()),
+            global.display.connect('notify::focus-window', () => this._updatePause()),
+        ];
+        this._overviewSignals = [
+            Main.overview.connect('showing', () => this._updatePause()),
+            Main.overview.connect('hidden', () => this._updatePause()),
         ];
         this._workspaceSignal = global.workspace_manager.connect('active-workspace-changed',
             () => this._updatePause());
@@ -124,6 +159,10 @@ export default class WaylandWallpaperEngine extends Extension {
             global.display.disconnect(id);
         this._displaySignals = [];
         global.workspace_manager.disconnect(this._workspaceSignal);
+        this._overviewSignals.forEach(id => Main.overview.disconnect(id));
+        this._overviewSignals = [];
+        this._configMonitor.cancel();
+        this._configMonitor = null;
 
         this._input.disable();
         this._input = null;
@@ -157,6 +196,19 @@ export default class WaylandWallpaperEngine extends Extension {
         this._holders.clear();
 
         this._reloadBackgrounds();
+    }
+
+    _loadConfig() {
+        let mode = 'focus';
+        try {
+            const [, bytes] = GLib.file_get_contents(CONFIG_PATH);
+            const value = JSON.parse(new TextDecoder().decode(bytes)).pause;
+            if (PAUSE_MODES.has(value))
+                mode = value;
+        } catch {
+            // no config yet, or it is being rewritten: keep the default
+        }
+        this._pauseMode = mode;
     }
 
     _syncMenuVisibility() {
@@ -314,6 +366,7 @@ export default class WaylandWallpaperEngine extends Extension {
             if (!win.is_fullscreen())
                 win.make_fullscreen();
             this._refreshClones();
+            this._updatePause();
             return;
         }
 
@@ -347,25 +400,45 @@ export default class WaylandWallpaperEngine extends Extension {
     }
 
     // ------------------------------------------------------------------
-    // Fullscreen pause (SIGSTOP / SIGCONT)
+    // Pausing (SIGSTOP / SIGCONT): a stopped renderer uses no CPU or GPU, and
+    // with no new frames GNOME Shell has nothing to repaint either. The clones
+    // keep showing the last frame.
     // ------------------------------------------------------------------
 
-    _updatePause() {
+    _shouldPause() {
+        if (this._pauseMode === 'never')
+            return false;
+        // nobody is looking at it
+        if (Main.sessionMode.isLocked)
+            return true;
         // our own renderer windows are fullscreen too; only other visible
         // fullscreen windows on the current workspace count
         const workspace = global.workspace_manager.get_active_workspace();
         const fullscreen = global.display.list_all_windows().some(w =>
             !isRenderer(w) && w.is_fullscreen() && !w.minimized && w.located_on_workspace(workspace));
-        this._input?.setPaused(fullscreen);
+        if (fullscreen)
+            return true;
+        return this._pauseMode === 'focus' && !desktopActive();
+    }
+
+    _updatePause() {
+        if (!this._renderers)
+            return;
+        const pause = this._shouldPause();
+        this._input?.setPaused(pause);
 
         for (const win of this._renderers.keys()) {
             const pid = win.get_pid();
             if (pid <= 0)
                 continue;
-            if (fullscreen && !this._stoppedPids.has(pid)) {
+            // a renderer still waiting for its first frame must keep running
+            const actor = win.get_compositor_private();
+            const ready = actor && hasContent(actor) && !this._contentWaits.has(win);
+            const stop = pause && ready;
+            if (stop && !this._stoppedPids.has(pid)) {
                 this._signal(pid, 'STOP');
                 this._stoppedPids.add(pid);
-            } else if (!fullscreen && this._stoppedPids.has(pid)) {
+            } else if (!stop && this._stoppedPids.has(pid)) {
                 this._signal(pid, 'CONT');
                 this._stoppedPids.delete(pid);
             }
@@ -378,7 +451,8 @@ export default class WaylandWallpaperEngine extends Extension {
         // the single pid if it is not a group leader.
         try {
             GLib.spawn_async(null,
-                ['sh', '-c', `kill -${sig} -- -${pid} 2>/dev/null || kill -${sig} ${pid}`],
+                // no "--": dash's kill (Ubuntu's sh) rejects it
+                ['sh', '-c', `kill -${sig} -${pid} 2>/dev/null || kill -${sig} ${pid}`],
                 null, GLib.SpawnFlags.SEARCH_PATH, null);
         } catch (e) {
             console.error(`[wayland-wallpaperengine] kill -${sig} ${pid} failed: ${e.message}`);

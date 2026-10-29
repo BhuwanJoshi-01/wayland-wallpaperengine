@@ -51,6 +51,7 @@ DEFAULT_CONFIG = {
     "silent": False,
     "volume": 50,              # 0-100
     "automute": False,         # also mute while other apps play audio
+    "pause": "focus",          # GNOME: focus (play only on the desktop) | fullscreen | never
     "scaling": "fill",         # fill | fit | stretch | default
     "gpu": "igpu",             # igpu | dgpu (NVIDIA PRIME offload)
     "backend": "auto",         # auto | gnome | layer-shell
@@ -750,7 +751,8 @@ def cmd_state(_args):
     except SystemExit:
         origin, current = None, {"current_id": None, "current_title": None, "current_type": None}
     print(json.dumps({"source": cfg.get("source"), "origin": origin, "volume": cfg.get("volume"),
-                      "silent": cfg.get("silent"), "fps": cfg.get("fps"), **current}))
+                      "silent": cfg.get("silent"), "fps": cfg.get("fps"), "pause": cfg.get("pause"),
+                      **current}))
 
 
 def cmd_config(args):

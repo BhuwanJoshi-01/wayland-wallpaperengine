@@ -44,9 +44,9 @@ export function isDesktopWindow(win) {
 }
 
 export class InputBridge {
-    constructor({getRenderers, isRenderer}) {
+    constructor({getRenderers, desktopActive}) {
         this._getRenderers = getRenderers;
-        this._isRenderer = isRenderer;
+        this._desktopActive = desktopActive;
     }
 
     enable() {
@@ -176,13 +176,6 @@ export class InputBridge {
     // ------------------------------------------------------------------
     // audio
     // ------------------------------------------------------------------
-
-    _desktopActive() {
-        if (Main.sessionMode.isLocked || Main.overview.visible)
-            return false;
-        const focus = global.display.focus_window;
-        return !focus || isDesktopWindow(focus) || this._isRenderer(focus);
-    }
 
     _syncAudio(force = false) {
         if (!this._socket)

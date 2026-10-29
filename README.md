@@ -6,7 +6,7 @@ Live wallpapers and **Steam Wallpaper Engine** workshop items on Linux **Wayland
 - **Video** wallpapers (workshop items or any `.mp4`/`.webm`/`.mkv` file) play through `mpv`, which uses hardware decoding.
 - On **GNOME**, a small GNOME Shell extension places the renderer behind your desktop.
 - On **KDE Plasma, Hyprland, Sway, niri** and other compositors with `wlr-layer-shell`, linux-wallpaperengine draws on the background layer directly.
-- The wallpaper **pauses itself** whenever a window is fullscreen (games, videos), so it costs nothing while you play.
+- The wallpaper **pauses itself** whenever an app is focused or a window is fullscreen, so it uses no CPU or GPU while you work or play; it plays (with sound) when you are on the desktop.
 - `wwe` is a single command to list, pick, set, randomize and autostart wallpapers.
 
 > You need to own [Wallpaper Engine](https://store.steampowered.com/app/431960/) on Steam. Its assets are required for scene wallpapers, and the workshop items are what you subscribe to there. This project is not affiliated with Wallpaper Engine or Valve.
@@ -85,6 +85,7 @@ Settings are stored in `~/.config/wwe/config.json`:
 | `fps` | `30` | frame limit for scene/web wallpapers |
 | `silent` / `volume` | `true` / `15` | sound |
 | `scaling` | `fill` | `fill`, `fit`, `stretch`, `default` |
+| `pause` | `focus` | GNOME: `focus` plays only while the desktop is focused (no CPU/GPU use otherwise), `fullscreen` pauses only for fullscreen apps, `never` |
 | `gpu` | `igpu` | `dgpu` renders on the NVIDIA GPU (PRIME offload) |
 | `backend` | `auto` | force `gnome` or `layer-shell` |
 | `video_player` | `auto` | `mpv` or `engine` for video items |

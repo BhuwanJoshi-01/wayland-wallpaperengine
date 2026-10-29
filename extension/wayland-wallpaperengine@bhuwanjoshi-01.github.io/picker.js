@@ -112,6 +112,13 @@ class WallpaperMenu extends PanelMenu.Button {
         volumeItem.add_child(this._volume);
         this.menu.addMenuItem(volumeItem);
 
+        this._pauseOnFocus = new PopupMenu.PopupSwitchMenuItem('Pause when an app is focused', true);
+        this._pauseOnFocus.connect('toggled', (_item, state) => {
+            if (!this._syncingUi)
+                runWwe(['config', `pause=${state ? 'focus' : 'fullscreen'}`]).catch(logError);
+        });
+        this.menu.addMenuItem(this._pauseOnFocus);
+
         this._follow = new PopupMenu.PopupSwitchMenuItem('Follow the Wallpaper Engine app', false);
         this._follow.connect('toggled', (_item, state) => {
             if (!this._syncingUi)
@@ -161,6 +168,7 @@ class WallpaperMenu extends PanelMenu.Button {
 
         this._syncingUi = true;
         this._follow.setToggleState(s.source === 'wallpaper-engine');
+        this._pauseOnFocus.setToggleState((s.pause ?? 'focus') === 'focus');
         this._volume.value = s.silent ? 0 : (s.volume ?? 50) / 100;
         this._syncingUi = false;
         this._updateVolumeIcon();
