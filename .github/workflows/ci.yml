@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extension JavaScript syntax
+        run: |
+          for f in extension/*/*.js; do
+            cp "$f" "${RUNNER_TEMP}/check.mjs"
+            node --check "${RUNNER_TEMP}/check.mjs" || { echo "::error file=$f::syntax error"; exit 1; }
+          done
+
+      - name: Extension metadata
+        run: python3 -c "import json,glob; [json.load(open(f)) for f in glob.glob('extension/*/metadata.json')]"
+
+      - name: wwe (Python)
+        run: |
+          python3 -m py_compile bin/wwe
+          python3 bin/wwe --help >/dev/null
+
+      - name: Shell scripts
+        run: |
+          for f in install.sh uninstall.sh scripts/*.sh; do bash -n "$f"; done
+          shellcheck -x -S warning install.sh uninstall.sh scripts/*.sh
+
+      - name: Engine patches apply to the pinned commit
+        run: |
+          ref=$(grep -oP 'ENGINE_REF:-\K[0-9a-f]{40}' scripts/build-engine.sh)
+          git clone --quiet --filter=blob:none https://github.com/Almamu/linux-wallpaperengine.git engine
+          git -C engine checkout --quiet "$ref"
+          for p in patches/linux-wallpaperengine/*.patch; do git -C engine apply --check "$PWD/$p"; done
+
+      - name: Extension package
+        run: scripts/pack-extension.sh

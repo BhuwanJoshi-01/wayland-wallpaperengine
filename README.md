@@ -1,122 +1,149 @@
 # Wayland Wallpaper Engine
 
-Live wallpapers and **Steam Wallpaper Engine** workshop items on Linux **Wayland**, including **GNOME**, where no existing tool could put them on the desktop.
+**Your Steam Wallpaper Engine wallpapers as a live desktop background on Linux Wayland, including GNOME.**
 
-- **Scene** and **web** wallpapers are rendered by [linux-wallpaperengine](https://github.com/Almamu/linux-wallpaperengine).
-- **Video** wallpapers (workshop items or any `.mp4`/`.webm`/`.mkv` file) play through `mpv`, which uses hardware decoding.
-- On **GNOME**, a small GNOME Shell extension places the renderer behind your desktop.
-- On **KDE Plasma, Hyprland, Sway, niri** and other compositors with `wlr-layer-shell`, linux-wallpaperengine draws on the background layer directly.
-- The wallpaper **pauses itself** whenever an app is focused or a window is fullscreen, so it uses no CPU or GPU while you work or play; it plays (with sound) when you are on the desktop.
-- `wwe` is a single command to list, pick, set, randomize and autostart wallpapers.
+Scene, web and video wallpapers from the Steam Workshop play behind your windows. You can interact with them using the mouse, they play sound while you are on the desktop, and they stop completely while you work or game, so they cost no CPU or GPU then.
 
-> You need to own [Wallpaper Engine](https://store.steampowered.com/app/431960/) on Steam. Its assets are required for scene wallpapers, and the workshop items are what you subscribe to there. This project is not affiliated with Wallpaper Engine or Valve.
+[![CI](https://github.com/BhuwanJoshi-01/wayland-wallpaperengine/actions/workflows/ci.yml/badge.svg)](https://github.com/BhuwanJoshi-01/wayland-wallpaperengine/actions/workflows/ci.yml)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
-## Why
-
-On GNOME Wayland, linux-wallpaperengine has nowhere to draw. Its Wayland backend needs the `wlr-layer-shell` protocol, and GNOME's compositor (mutter) does not implement it. The X11 root-window trick doesn't work either. GUIs such as [linux-wallpaperengine-gui](https://github.com/AzPepoze/linux-wallpaperengine-gui) inherit the same limitation.
-
-## How it works (GNOME)
-
-```
- wwe.service ── wwe run ──exec──▶ linux-wallpaperengine --window 0x0xWxH   (scene / web)
-                                 mpv --wayland-app-id=wwe-video            (video)
-                                          │  normal Wayland window
-                                          ▼
- GNOME Shell + extension ─┬─ keeps the window minimized and out of overview / alt-tab / dock
-                          ├─ paints a live Clutter.Clone of it inside every background actor
-                          │  (desktop, overview workspaces, lock screen)
-                          └─ SIGSTOP / SIGCONT the renderer while something is fullscreen
+```bash
+curl -fsSL https://raw.githubusercontent.com/BhuwanJoshi-01/wayland-wallpaperengine/main/install.sh | bash
 ```
 
-The window-cloning technique comes from [Hanabi](https://github.com/jeffshee/gnome-ext-hanabi). Hanabi ships its own GTK video renderer. This project uses the same trick to host linux-wallpaperengine, so scene and web wallpapers work as well as videos. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+> You need to own [Wallpaper Engine](https://store.steampowered.com/app/431960/) on Steam: its assets are required for scene wallpapers, and the workshop items you subscribe to there are the wallpapers. This project is not affiliated with Wallpaper Engine, Kristjan Skutta or Valve.
 
-## Compatibility
+## Features
 
-| Desktop | Backend | Status |
-|---|---|---|
-| GNOME 50 (Wayland) | extension + window clone | working: scene, web, video |
-| KDE Plasma 6 (Wayland) | layer-shell (linux-wallpaperengine) | should work, needs testing |
-| Hyprland / Sway / niri / river | layer-shell | should work, needs testing |
-| X11 desktops | linux-wallpaperengine `--screen-root` | upstream behaviour |
-
-Some individual wallpapers don't render correctly. Those are linux-wallpaperengine limitations; see its [issue tracker](https://github.com/Almamu/linux-wallpaperengine/issues).
+- **Scene, web and video wallpapers** from the Steam Workshop. Scene and web wallpapers are rendered by [linux-wallpaperengine](https://github.com/Almamu/linux-wallpaperengine). Videos (workshop items or any `.mp4`/`.webm`/`.mkv`) play through `mpv` with hardware decoding.
+- **Works on GNOME (Wayland).** No existing tool could put these wallpapers on the GNOME desktop, because GNOME has no `wlr-layer-shell`. A small GNOME Shell extension does it here.
+- **Mouse interaction.** Parallax and cursor effects follow your pointer, and clicks on the desktop reach interactive wallpapers. Clicks on windows never do.
+- **Sound on the desktop only.** The wallpaper's audio plays while the desktop is focused and is muted when an app is focused.
+- **Pauses when you are not looking.** When an app is focused, the overview is open, the screen is locked or a game is fullscreen, the renderer is frozen (0 % CPU). Measured on an Intel iGPU: 13 % → 0 % renderer CPU, 22 % → 3 % GNOME Shell CPU, 71 % → 7 % GPU.
+- **Wallpaper picker** in the top bar: thumbnails of everything you subscribed to, search, volume, random, and a link to the Steam Workshop.
+- **The `wwe` command** for everything else: list, set, random, wallpaper properties, settings, diagnostics.
+- **Wallpaper properties** (colours, toggles, sliders) can be set per wallpaper.
+- **Autostarts** with your session (systemd user service). The wallpaper restarts if it crashes and gives up after repeated failures.
+- **Other compositors:** on KDE Plasma, Hyprland, Sway, niri and other compositors with `wlr-layer-shell`, linux-wallpaperengine draws on the background layer directly.
 
 ## Install
 
 ```bash
-git clone https://github.com/BhuwanJoshi-01/wayland-wallpaperengine.git
-cd wayland-wallpaperengine
-
-# Ubuntu / Debian build dependencies (build-engine.sh prints whatever is missing)
-sudo apt install build-essential cmake git pkg-config libxrandr-dev libxinerama-dev libxcursor-dev \
-  libxi-dev libgl-dev libglew-dev freeglut3-dev libsdl2-dev liblz4-dev libavcodec-dev libavformat-dev \
-  libavutil-dev libswscale-dev libxxf86vm-dev libglm-dev libglfw3-dev libmpv-dev libpulse-dev \
-  libfftw3-dev libfreetype-dev libdbus-1-dev zlib1g-dev libwayland-dev wayland-protocols \
-  libxkbcommon-dev libegl-dev mpv zenity
-
-./install.sh
+curl -fsSL https://raw.githubusercontent.com/BhuwanJoshi-01/wayland-wallpaperengine/main/install.sh | bash
 ```
 
-`install.sh` builds a pinned and patched linux-wallpaperengine into `~/.local/opt/linux-wallpaperengine`. It also installs `wwe` to `~/.local/bin`, the GNOME extension, and a `wwe.service` systemd user unit that starts with your session.
+The installer:
 
-On GNOME, **log out and back in once** after the first install so that GNOME Shell loads the extension.
+1. downloads this repository to `~/.local/share/wayland-wallpaperengine/src`;
+2. checks for the packages it needs and offers to install the missing ones with `sudo`. It knows apt (Ubuntu, Debian, Mint, Pop!_OS), dnf (Fedora), pacman (Arch, Manjaro, EndeavourOS) and zypper (openSUSE);
+3. builds a pinned, patched [linux-wallpaperengine](https://github.com/Almamu/linux-wallpaperengine) into `~/.local/opt/linux-wallpaperengine`. This happens once, takes 10–20 minutes, and downloads about 300 MB (Chromium Embedded Framework);
+4. installs the `wwe` command, the GNOME Shell extension and the `wwe.service` user service.
+
+On GNOME, **log out and back in once** afterwards so GNOME Shell loads the extension.
+
+Nothing is installed system-wide apart from the distribution packages you agree to. To install from a clone instead:
+
+```bash
+git clone https://github.com/BhuwanJoshi-01/wayland-wallpaperengine.git
+cd wayland-wallpaperengine
+./install.sh            # --yes: no questions, --rebuild: rebuild the engine, --dev: symlink files
+```
+
+### Requirements
+
+- Linux with a **Wayland** session and **systemd**
+- **GNOME 46–50** (tested on GNOME 50), or a compositor with `wlr-layer-shell` (KDE Plasma 6, Hyprland, Sway, niri, …)
+- **Wallpaper Engine** installed through Steam (native or Flatpak Steam; it does not need to run)
+- A GPU with OpenGL 3.3
 
 ## Usage
 
+Subscribe to wallpapers in the [Steam Workshop](https://steamcommunity.com/app/431960/workshop/) (Steam downloads them even if Wallpaper Engine is never started), then choose one from the **wallpaper icon in the top bar**, or:
+
 ```bash
-wwe list                       # subscribed workshop items (* = current)
-wwe set 3652531378             # apply a workshop item
-wwe set ~/Videos/rain.mp4      # any video file
-wwe pick                       # choose from a dialog
+wwe list                         # your subscribed wallpapers (* = current)
+wwe set 3652531378               # apply a workshop item by id
+wwe set ~/Videos/rain.mp4        # or any video file
 wwe random --type scene
-wwe set 1748506393 --volume 30 # with sound
-wwe set 3652531378 --fps 60 --scaling fit
-wwe properties                 # list the current wallpaper's settings
+wwe pick                         # choose in a dialog
+wwe properties                   # settings the current wallpaper offers
 wwe set 3730181927 -p schemecolor="0.2 0.4 1"
+wwe config volume=70 fps=24      # change settings (applied live)
 wwe stop | start | restart | status
-wwe doctor                     # diagnose the setup
+wwe doctor                       # check the whole setup
 ```
 
-Settings are stored in `~/.config/wwe/config.json`:
+Logs: `journalctl --user -u wwe -f`
+
+## Configuration
+
+`~/.config/wwe/config.json`. Change values with `wwe config key=value` or from the picker. Changes apply immediately.
 
 | key | default | meaning |
 |---|---|---|
 | `wallpaper` | `null` | workshop id, project folder or video file |
-| `fps` | `30` | frame limit for scene/web wallpapers |
-| `silent` / `volume` | `true` / `15` | sound |
+| `fps` | `30` | frame limit for scene and web wallpapers |
+| `volume` | `50` | 0–100 |
+| `silent` | `false` | mute the wallpaper |
+| `pause` | `focus` | GNOME: `focus` plays only while the desktop is focused; `fullscreen` pauses only for fullscreen windows; `never` |
+| `audio_processing` | `auto` | audio visualiser input for wallpapers that react to music. It records what your speakers play, so GNOME shows the microphone indicator meanwhile. `auto` = only for wallpapers that declare it, `false` = never |
+| `automute` | `false` | also mute while another app plays sound |
+| `disable_mouse` | `false` | no mouse interaction |
 | `scaling` | `fill` | `fill`, `fit`, `stretch`, `default` |
-| `pause` | `focus` | GNOME: `focus` plays only while the desktop is focused (no CPU/GPU use otherwise), `fullscreen` pauses only for fullscreen apps, `never` |
-| `gpu` | `igpu` | `dgpu` renders on the NVIDIA GPU (PRIME offload) |
+| `gpu` | `igpu` | `dgpu` renders on a discrete NVIDIA GPU (PRIME offload) |
+| `source` | `wallpaper-engine` | `wallpaper-engine` follows a selection saved by the Wallpaper Engine app if there is one, else the `wwe set` wallpaper; `manual` always uses the `wwe set` wallpaper |
+| `video_player` | `auto` | `mpv` or `engine` for video wallpapers |
 | `backend` | `auto` | force `gnome` or `layer-shell` |
-| `video_player` | `auto` | `mpv` or `engine` for video items |
 | `properties` | `{}` | wallpaper property overrides |
 | `extra_args` | `[]` | extra linux-wallpaperengine arguments |
 
-Logs: `journalctl --user -u wwe -f`. Extension logs: `journalctl -f /usr/bin/gnome-shell | grep -i wallpaper`.
+## How it works
+
+On GNOME the wallpaper renderer runs as an ordinary, hidden window. The extension shows a live copy of it inside GNOME's own background, so the wallpaper also appears in the overview and on the lock screen, and it feeds the renderer your mouse position and the audio state over a socket. The same window-copy technique is used by [Hanabi](https://github.com/jeffshee/gnome-ext-hanabi) for videos. Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+```
+ wwe.service ── wwe run (supervisor) ──▶ linux-wallpaperengine --window   scene / web
+                                          mpv --wayland-app-id=wwe-video   video
+                                                │ hidden Wayland window
+ GNOME Shell + extension ──────────────────────┤
+   • copies the window into the desktop / overview / lock screen background
+   • sends pointer and mute commands (control socket, mpv IPC)
+   • freezes the renderer (SIGSTOP) while you are not on the desktop
+   • top bar wallpaper picker
+```
+
+## Compatibility
+
+| | Status |
+|---|---|
+| GNOME 50, Wayland | ✅ tested: scene, web, video, mouse, audio, pausing |
+| GNOME 46–49, Wayland | should work (compatibility code included, not yet tested), please report |
+| KDE Plasma 6 / Hyprland / Sway / niri | linux-wallpaperengine on `wlr-layer-shell`, needs testing |
+| Ubuntu / Debian | ✅ tested on Ubuntu 26.04 |
+| Fedora / Arch / openSUSE | package lists included, needs testing |
+
+Some wallpapers don't render correctly because linux-wallpaperengine doesn't support every Wallpaper Engine feature yet. See its [issue tracker](https://github.com/Almamu/linux-wallpaperengine/issues). The Wallpaper Engine app itself runs under Proton for browsing and subscribing, but it cannot apply wallpapers there. Use the picker or `wwe` for that.
+
+## Troubleshooting
+
+See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). Start with `wwe doctor`.
 
 ## Uninstall
 
 ```bash
-./uninstall.sh          # keep config and the engine build
-./uninstall.sh --purge  # remove everything
+~/.local/share/wayland-wallpaperengine/src/uninstall.sh          # keeps settings and the engine build
+~/.local/share/wayland-wallpaperengine/src/uninstall.sh --purge  # removes everything
 ```
 
-## Roadmap
+## Contributing
 
-- One renderer per monitor (multi-monitor currently mirrors the primary monitor's wallpaper)
-- Settings / wallpaper browser UI (GNOME extension preferences, thumbnails from `preview.jpg`)
-- Playlists and timed rotation
-- Mouse interaction forwarding for interactive wallpapers
-- Older GNOME versions (45–49)
-- Packaging: extensions.gnome.org, AUR, deb, Flatpak
-
-Contributions are welcome. Testing reports for KDE and wlroots compositors are especially useful.
+Bug reports, testing on other distributions and desktops, and pull requests are very welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Credits
 
-- [Almamu/linux-wallpaperengine](https://github.com/Almamu/linux-wallpaperengine): the Wallpaper Engine renderer (GPL-3.0)
-- [jeffshee/gnome-ext-hanabi](https://github.com/jeffshee/gnome-ext-hanabi): window-as-wallpaper technique for GNOME (GPL-3.0)
-- [AzPepoze/linux-wallpaperengine-gui](https://github.com/AzPepoze/linux-wallpaperengine-gui): GUI for linux-wallpaperengine
+- [Almamu/linux-wallpaperengine](https://github.com/Almamu/linux-wallpaperengine): the Wallpaper Engine renderer (GPL-3.0). This project builds it with two small patches in [`patches/`](patches/linux-wallpaperengine).
+- [jeffshee/gnome-ext-hanabi](https://github.com/jeffshee/gnome-ext-hanabi): the window-as-wallpaper technique for GNOME (GPL-3.0).
+- [mpv](https://mpv.io) for video playback.
 
 ## License
 

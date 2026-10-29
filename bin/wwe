@@ -51,6 +51,7 @@ DEFAULT_CONFIG = {
     "silent": False,
     "volume": 50,              # 0-100
     "automute": False,         # also mute while other apps play audio
+    "audio_processing": "auto",  # auto (only audio-responsive wallpapers) | true | false
     "pause": "focus",          # GNOME: focus (play only on the desktop) | fullscreen | never
     "scaling": "fill",         # fill | fit | stretch | default
     "gpu": "igpu",             # igpu | dgpu (NVIDIA PRIME offload)
@@ -151,6 +152,11 @@ def read_project(path):
         return None
 
 
+def audio_responsive(project):
+    """Wallpaper Engine marks wallpapers that react to music in project.json."""
+    return bool((project.get("general") or {}).get("supportsaudioprocessing"))
+
+
 def list_wallpapers():
     items = {}
     for wd in workshop_dirs():
@@ -168,6 +174,7 @@ def list_wallpapers():
                 "title": p.get("title", ""),
                 "file": p.get("file"),
                 "preview": str(preview) if preview and preview.exists() else None,
+                "audio": audio_responsive(p),
             }
     return list(items.values())
 
@@ -180,11 +187,13 @@ def resolve_wallpaper(ref):
     p = Path(ref).expanduser()
 
     if p.is_file() and p.suffix.lower() in VIDEO_EXTS:
-        return {"id": p.name, "path": p.parent, "type": "video", "title": p.name, "file": p.name, "video": p}
+        return {"id": p.name, "path": p.parent, "type": "video", "title": p.name, "file": p.name,
+                "video": p, "audio": False}
 
     if p.is_dir() and (p / "project.json").exists():
         proj = read_project(p) or {}
         item = {"id": p.name, "path": p, "type": str(proj.get("type", "?")).lower(),
+                "audio": audio_responsive(proj),
                 "title": proj.get("title", ""), "file": proj.get("file")}
     else:
         item = next((w for w in list_wallpapers() if w["id"] == ref), None)
@@ -379,13 +388,26 @@ def volume_percent(cfg):
     return 0 if cfg.get("silent") else max(0, min(100, int(cfg.get("volume", 50))))
 
 
-def engine_common_args(cfg, properties):
+def audio_processing_enabled(cfg, item):
+    """The visualiser input records what the speakers play (GNOME shows the
+    microphone indicator meanwhile), so only run it for wallpapers that use it."""
+    setting = cfg.get("audio_processing", "auto")
+    if setting in (True, "true", "on"):
+        return True
+    if setting in (False, "false", "off"):
+        return False
+    return bool(item.get("audio"))
+
+
+def engine_common_args(cfg, properties, item):
     # --volume 0 instead of --silent keeps the audio device open, so the
     # volume can be changed live over the control socket
     # (linux-wallpaperengine volume is 0-128, SDL_MIX_MAXVOLUME)
     args = ["--fps", str(cfg["fps"]), "--volume", str(round(volume_percent(cfg) * 1.28))]
     if not cfg.get("automute"):
         args.append("--noautomute")
+    if not audio_processing_enabled(cfg, item):
+        args.append("--no-audio-processing")
     if cfg.get("disable_mouse"):
         # without mouse input, camera parallax parks the camera off-centre and
         # exposes the scene's clear colour along two edges
@@ -434,7 +456,7 @@ def build_command(cfg, item, backend, properties):
         argv = [engine, "--window", f"0x0x{w}x{h}", "--scaling", scaling,
                 # GNOME has no fullscreen detection protocol; the extension pauses us instead
                 "--no-fullscreen-pause"]
-        argv += engine_common_args(cfg, properties) + list(cfg.get("extra_args") or []) + [str(item["path"])]
+        argv += engine_common_args(cfg, properties, item) + list(cfg.get("extra_args") or []) + [str(item["path"])]
         # the hidden window gets no input; the extension sends pointer / mute here
         env["WWE_CONTROL_SOCKET"] = str(ENGINE_SOCKET)
         return argv, env
@@ -443,11 +465,13 @@ def build_command(cfg, item, backend, properties):
     engine = find_engine(cfg)
     if not engine:
         die("linux-wallpaperengine not found; run scripts/build-engine.sh")
-    outputs = drm_outputs() or ["eDP-1"]
+    outputs = drm_outputs()
+    if not outputs:
+        die("no connected monitors found in /sys/class/drm; set \"backend\" or report a bug")
     argv = [engine]
     for o in outputs:
         argv += ["--screen-root", o, "--bg", str(item["path"]), "--scaling", scaling]
-    argv += engine_common_args(cfg, properties) + list(cfg.get("extra_args") or [])
+    argv += engine_common_args(cfg, properties, item) + list(cfg.get("extra_args") or [])
     return argv, env
 
 

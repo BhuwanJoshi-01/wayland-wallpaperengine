@@ -54,6 +54,16 @@ function runWwe(args) {
     });
 }
 
+// St.BoxLayout got "orientation" in GNOME 48; older versions use "vertical"
+function verticalBox(params) {
+    const box = new St.BoxLayout(params);
+    if ('orientation' in box)
+        box.orientation = Clutter.Orientation.VERTICAL;
+    else
+        box.vertical = true;
+    return box;
+}
+
 function logError(e) {
     console.error(`[wayland-wallpaperengine] ${e.message}`);
 }
@@ -96,7 +106,7 @@ class WallpaperMenu extends PanelMenu.Button {
             overlay_scrollbars: true,
             x_expand: true,
         });
-        this._grid = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, style_class: 'wwe-grid'});
+        this._grid = verticalBox({style_class: 'wwe-grid'});
         this._scroll.set_child(this._grid);
         gridItem.add_child(this._scroll);
         this.menu.addMenuItem(gridItem);
@@ -202,7 +212,7 @@ class WallpaperMenu extends PanelMenu.Button {
 
     _makeTile(item) {
         const current = item.id === this._state.current_id;
-        const box = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL});
+        const box = verticalBox({});
 
         const thumb = new St.Widget({
             style_class: 'wwe-thumb',

@@ -78,6 +78,20 @@ function contentActor(windowActor) {
     return best ?? windowActor;
 }
 
+// Runs kill(1) without a shell; resolves to true if it succeeded.
+function runKill(args) {
+    return new Promise(resolve => {
+        const proc = Gio.Subprocess.new(['kill', ...args], Gio.SubprocessFlags.STDERR_SILENCE);
+        proc.wait_check_async(null, (p, res) => {
+            try {
+                resolve(p.wait_check_finish(res));
+            } catch {
+                resolve(false);
+            }
+        });
+    });
+}
+
 // The desktop is what the user is looking at: nothing or the desktop itself
 // focused, outside the overview and lock screen. Drives audio and pausing.
 function desktopActive() {
@@ -445,18 +459,15 @@ export default class WaylandWallpaperEngine extends Extension {
         }
     }
 
+    // `wwe run` starts each renderer in its own process group, so signal the
+    // whole group (it includes the CEF helpers of web wallpapers), falling
+    // back to the single pid. Signals are queued so that a quick STOP/CONT
+    // sequence (focus changes) can never be delivered out of order.
     _signal(pid, sig) {
-        // The launcher starts the renderer with setsid, so signal the whole
-        // process group (includes CEF helpers for web wallpapers); fall back to
-        // the single pid if it is not a group leader.
-        try {
-            GLib.spawn_async(null,
-                // no "--": dash's kill (Ubuntu's sh) rejects it
-                ['sh', '-c', `kill -${sig} -${pid} 2>/dev/null || kill -${sig} ${pid}`],
-                null, GLib.SpawnFlags.SEARCH_PATH, null);
-        } catch (e) {
-            console.error(`[wayland-wallpaperengine] kill -${sig} ${pid} failed: ${e.message}`);
-        }
+        this._signalQueue = (this._signalQueue ?? Promise.resolve())
+            .then(() => runKill(['-s', sig, '--', `-${pid}`]))
+            .then(ok => ok || runKill(['-s', sig, `${pid}`]))
+            .catch(e => console.error(`[wayland-wallpaperengine] kill -s ${sig} ${pid}: ${e.message}`));
     }
 
     // ------------------------------------------------------------------
@@ -526,7 +537,8 @@ export default class WaylandWallpaperEngine extends Extension {
     }
 
     _reloadBackgrounds() {
-        Main.layoutManager._updateBackgrounds().catch(logError);
+        // async (returns a promise) since GNOME 48
+        Promise.resolve(Main.layoutManager._updateBackgrounds()).catch(logError);
         Main.screenShield?._dialog?._updateBackgrounds?.();
         try {
             Main.overview._overview._controls._workspacesDisplay._updateWorkspacesViews();
