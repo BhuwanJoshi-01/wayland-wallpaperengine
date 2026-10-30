@@ -52,8 +52,6 @@ function hasContent(actor) {
     return ok && width > 0 && height > 0;
 }
 
-const SURFACE_ACTOR_TYPE = GObject.type_from_name('MetaSurfaceActor');
-
 // wwe's config; the extension only reads "pause":
 //   "focus"      (default) play only while the desktop is focused, like
 //                Wallpaper Engine's "pause when another application is focused"
@@ -66,10 +64,15 @@ const PAUSE_MODES = new Set(['focus', 'fullscreen', 'never']);
 // instead of the whole window actor leaves out whatever mutter draws around
 // the client's buffer, e.g. the black background (and centring offset) it adds
 // to fullscreen windows whose buffer does not fill the monitor.
+// The type is looked up on every call: GObject registers it with the first
+// surface, which at login is after this module has loaded.
 function contentActor(windowActor) {
+    const surfaceType = GObject.type_from_name('MetaSurfaceActor');
+    if (!surfaceType)
+        return windowActor;
     let best = null;
     const walk = actor => {
-        if (actor.visible && GObject.type_is_a(actor.constructor.$gtype, SURFACE_ACTOR_TYPE) &&
+        if (actor.visible && GObject.type_is_a(actor.constructor.$gtype, surfaceType) &&
             actor.width * actor.height > (best ? best.width * best.height : 0))
             best = actor;
         actor.get_children().forEach(child => walk(child));
@@ -587,7 +590,13 @@ export default class WaylandWallpaperEngine extends Extension {
         inj.overrideMethod(Background.BackgroundManager.prototype, '_createBackgroundActor',
             original => function () {
                 const backgroundActor = original.call(this);
-                self._attachHolder(backgroundActor);
+                // an error here would break the shell's own background
+                // (overview workspaces, lock screen), so never let it escape
+                try {
+                    self._attachHolder(backgroundActor);
+                } catch (e) {
+                    console.error(`wayland-wallpaperengine: ${e}`);
+                }
                 return backgroundActor;
             });
 

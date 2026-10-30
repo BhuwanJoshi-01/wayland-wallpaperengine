@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2 (2026-10-30)
+
+- Fix: after logging in, the live wallpaper did not appear and the overview lost its workspace view. The extension looked up mutter's surface actor type when it loaded, which at login is before any window exists, and every later attempt to attach the wallpaper failed. The type is now looked up when needed, and an error while attaching can no longer break GNOME's own backgrounds.
+
 ## 0.1.1 (2026-10-29)
 
 - Extension passes the extensions.gnome.org review checker (Shexli) with no findings: the config is read asynchronously, the config monitor's signal and the blur-my-shell refresh timer are cleaned up in `disable()`, and the use of the lock-screen session mode is documented there.
