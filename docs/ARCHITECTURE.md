@@ -14,6 +14,7 @@
 | `scripts/deps.sh` | Distribution package names (apt, dnf, pacman, zypper). |
 | `scripts/build-engine.sh` | Clones linux-wallpaperengine at a pinned commit, applies `patches/`, builds, installs to `~/.local/opt`. |
 | `patches/linux-wallpaperengine/` | Downstream engine patches, meant to be upstreamed. |
+| `site/` | Project website (static, no build step), deployed to GitHub Pages by `.github/workflows/pages.yml`. |
 
 ## Why GNOME needs special handling
 

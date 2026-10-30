@@ -7,6 +7,8 @@ Scene, web and video wallpapers from the Steam Workshop play behind your windows
 [![CI](https://github.com/BhuwanJoshi-01/wayland-wallpaperengine/actions/workflows/ci.yml/badge.svg)](https://github.com/BhuwanJoshi-01/wayland-wallpaperengine/actions/workflows/ci.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
+**Website:** <https://bhuwanjoshi-01.github.io/wayland-wallpaperengine/>
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/BhuwanJoshi-01/wayland-wallpaperengine/main/install.sh | bash
 ```

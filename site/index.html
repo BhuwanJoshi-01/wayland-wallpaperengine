@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wayland Wallpaper Engine: live Wallpaper Engine wallpapers on the GNOME desktop</title>
+<meta name="description" content="Play your Steam Wallpaper Engine wallpapers (scene, web and video) as the live desktop background on Linux Wayland, including GNOME. Mouse interaction, desktop-only sound, and automatic pausing.">
+<meta property="og:title" content="Wayland Wallpaper Engine">
+<meta property="og:description" content="Your Steam Wallpaper Engine wallpapers, live on the GNOME desktop on Wayland.">
+<meta property="og:image" content="https://bhuwanjoshi-01.github.io/wayland-wallpaperengine/assets/picker.webp">
+<meta property="og:url" content="https://bhuwanjoshi-01.github.io/wayland-wallpaperengine/">
+<meta name="theme-color" content="#15173a">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;600&family=Bricolage+Grotesque:opsz,wdth,wght@12..96,75..100,400..800&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<section class="desktop" aria-label="Introduction">
+  <canvas id="wallpaper" aria-hidden="true"></canvas>
+
+  <header class="topbar">
+    <span class="topbar-name">Wayland Wallpaper Engine</span>
+    <time class="topbar-clock" id="clock"></time>
+    <nav class="topbar-links" aria-label="Project">
+      <a href="#install">Install</a>
+      <a href="https://github.com/BhuwanJoshi-01/wayland-wallpaperengine">GitHub</a>
+    </nav>
+  </header>
+
+  <div class="hero">
+    <h1>Your Wallpaper Engine wallpapers, alive on the GNOME desktop.</h1>
+    <p class="hero-lede">Scene, web and video wallpapers from your Steam Workshop, drawn behind your windows on Wayland. They follow your mouse, play sound only on the desktop, and stop the moment you start working.</p>
+    <p class="hero-hint">Move your pointer. This page’s background reacts the way a scene wallpaper does.</p>
+  </div>
+
+  <div class="dock">
+    <code class="dock-command" id="dock-command">curl -fsSL https://raw.githubusercontent.com/BhuwanJoshi-01/wayland-wallpaperengine/main/install.sh | bash</code>
+    <button class="copy" type="button" data-copy="dock-command">Copy</button>
+    <a class="dock-link" href="https://github.com/BhuwanJoshi-01/wayland-wallpaperengine">View on GitHub</a>
+  </div>
+</section>
+
+<main>
+  <section class="band" aria-labelledby="features-title">
+    <div class="wrap">
+      <h2 id="features-title">What it does</h2>
+      <dl class="features">
+        <div>
+          <dt>Scene, web and video</dt>
+          <dd>Plays the wallpapers you subscribed to in the Steam Workshop. Scene and web wallpapers run in linux-wallpaperengine, videos in mpv.</dd>
+        </div>
+        <div>
+          <dt>Follows your mouse</dt>
+          <dd>Parallax, cursor effects and clicks on the desktop reach the wallpaper. Clicks on your windows always go to the windows.</dd>
+        </div>
+        <div>
+          <dt>Sound only on the desktop</dt>
+          <dd>The wallpaper’s audio plays while the desktop has focus and goes quiet when you switch to an app.</dd>
+        </div>
+        <div>
+          <dt>Everywhere GNOME shows a background</dt>
+          <dd>The desktop, the overview, the workspace previews and the lock screen.</dd>
+        </div>
+        <div>
+          <dt>A picker in the top bar</dt>
+          <dd>Thumbnails of everything you subscribed to, search, volume, a random wallpaper, and a link to the Workshop.</dd>
+        </div>
+        <div>
+          <dt>Easy on your laptop</dt>
+          <dd>Renders on the integrated GPU and freezes completely while you work or play a game.</dd>
+        </div>
+      </dl>
+    </div>
+  </section>
+
+  <section class="band band-pause" aria-labelledby="pause-title">
+    <div class="wrap split">
+      <div class="split-text">
+        <h2 id="pause-title">It stops when you start working</h2>
+        <p>As soon as a window has focus, the wallpaper is frozen in place. It uses no CPU and no GPU until you come back to the desktop, where it carries on from the same frame.</p>
+        <p>Try it here: click the window, then click the wallpaper around it.</p>
+        <p class="aside">Prefer it to pause only for fullscreen apps and games? Run <code>wwe config pause=fullscreen</code>.</p>
+      </div>
+      <div class="mini" id="mini">
+        <canvas id="mini-wallpaper" aria-hidden="true"></canvas>
+        <button class="mini-window" id="mini-window" type="button" aria-pressed="false">
+          <span class="mini-titlebar">Text Editor</span>
+          <span class="mini-lines" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+        </button>
+        <button class="mini-desktop" id="mini-desktop" type="button">Focus the desktop</button>
+        <p class="mini-status" id="mini-status" aria-live="polite">Playing. The desktop has focus.</p>
+        <p class="mini-frames"><span id="mini-frames">0</span> frames drawn</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="band" aria-labelledby="picker-title">
+    <div class="wrap split split-media">
+      <figure class="shot">
+        <img src="assets/picker.webp" width="900" height="850" loading="lazy" alt="The wallpaper picker open above the GNOME taskbar: a search field, a grid of wallpaper thumbnails marked scene, web or video, a volume slider, and entries for a random wallpaper and the Steam Workshop.">
+      </figure>
+      <div class="split-text">
+        <h2 id="picker-title">Choose a wallpaper from the top bar</h2>
+        <p>The picker lists every wallpaper you subscribed to, with its type. Click one and it’s on your desktop a moment later. Volume and pausing are set in the same menu.</p>
+        <p>Everything is also in the <code>wwe</code> command:</p>
+<pre><code>wwe list                  # your wallpapers
+wwe set 3652531378        # by Workshop id
+wwe set ~/Videos/rain.mp4 # or any video
+wwe random --type scene
+wwe config volume=70 fps=24</code></pre>
+      </div>
+    </div>
+  </section>
+
+  <section class="band band-how" aria-labelledby="how-title">
+    <div class="wrap">
+      <h2 id="how-title">How it works on GNOME</h2>
+      <p class="measure">Other Wayland desktops let a program draw on the background layer. GNOME doesn’t, so this project hands the job to a small GNOME Shell extension.</p>
+      <ol class="chain">
+        <li><strong>The renderer runs as a hidden window.</strong> linux-wallpaperengine draws scene and web wallpapers, mpv plays videos.</li>
+        <li><strong>The extension copies it into GNOME’s background.</strong> A live copy of that window sits inside the desktop, overview and lock screen backgrounds.</li>
+        <li><strong>The extension passes the mouse on and decides when to play.</strong> It sends pointer movement and clicks to the renderer, mutes it away from the desktop, and freezes it while you work.</li>
+      </ol>
+      <p class="measure">On KDE Plasma, Hyprland, Sway and niri, linux-wallpaperengine draws on the background layer directly; <code>wwe</code> picks the right way for your desktop.</p>
+    </div>
+  </section>
+
+  <section class="band band-install" id="install" aria-labelledby="install-title">
+    <div class="wrap split">
+      <div class="split-text">
+        <h2 id="install-title">Install</h2>
+        <ol class="steps">
+          <li>
+            <p>Run the installer in a terminal. It asks before installing any packages, then builds the renderer once (10 to 20 minutes).</p>
+            <div class="command">
+              <code id="install-command">curl -fsSL https://raw.githubusercontent.com/BhuwanJoshi-01/wayland-wallpaperengine/main/install.sh | bash</code>
+              <button class="copy" type="button" data-copy="install-command">Copy</button>
+            </div>
+          </li>
+          <li><p>Log out and back in once, so GNOME loads the extension.</p></li>
+          <li><p>Pick a wallpaper from the new icon in the top bar, or run <code>wwe random</code>.</p></li>
+        </ol>
+        <p class="aside">Something not working? Run <code>wwe doctor</code> and see the <a href="https://github.com/BhuwanJoshi-01/wayland-wallpaperengine/blob/main/docs/TROUBLESHOOTING.md">troubleshooting guide</a>.</p>
+      </div>
+      <div class="needs">
+        <h3>You need</h3>
+        <ul>
+          <li>Wallpaper Engine on Steam, with some wallpapers subscribed in the Workshop. The app itself doesn’t need to run.</li>
+          <li>GNOME 46 to 50 on Wayland (tested on GNOME 50), or KDE Plasma 6, Hyprland, Sway or niri.</li>
+          <li>Ubuntu, Debian, Fedora, Arch, openSUSE or a relative of them, with systemd.</li>
+          <li>A GPU with OpenGL 3.3.</li>
+        </ul>
+        <h3>Remove it</h3>
+        <p><code>~/.local/share/wayland-wallpaperengine/src/uninstall.sh</code> removes the extension, the <code>wwe</code> command and the service. Add <code>--purge</code> to delete your settings and the renderer build too.</p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <p>Free software under the GPL-3.0. Wallpapers are rendered by <a href="https://github.com/Almamu/linux-wallpaperengine">linux-wallpaperengine</a>; the GNOME technique comes from <a href="https://github.com/jeffshee/gnome-ext-hanabi">Hanabi</a>. Not affiliated with Wallpaper Engine or Valve.</p>
+    <nav aria-label="Project links">
+      <a href="https://github.com/BhuwanJoshi-01/wayland-wallpaperengine">Source code</a>
+      <a href="https://github.com/BhuwanJoshi-01/wayland-wallpaperengine/releases">Releases</a>
+      <a href="https://github.com/BhuwanJoshi-01/wayland-wallpaperengine/issues/new/choose">Report a problem</a>
+    </nav>
+  </div>
+</footer>
+
+<script type="module" src="main.js"></script>
+</body>
+</html>
