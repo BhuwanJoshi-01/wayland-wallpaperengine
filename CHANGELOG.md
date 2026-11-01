@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.0 (2026-11-01)
+
+The GNOME extension follows the extensions.gnome.org best practices. Update both parts: run the installer again (the extension alone cannot pause the wallpaper with an older `wwe`).
+
+- Pausing no longer starts a `kill` process on every focus change. The extension sends `pause`/`resume` messages to `wwe run`, which stops and continues its own renderer. It only acts on processes of the renderer it started.
+- The extension is split into small modules (renderer tracking, background clones, shell overrides, pausing, input, picker), each cleaning up what it creates. This fixes two signal handlers on the renderer window that were never disconnected.
+- Backgrounds that exist when the extension starts are found directly, instead of rebuilding GNOME's backgrounds through internal functions and a fake `monitors-changed` signal (used for blur-my-shell). Disabling restores the original layout of every background.
+- No more optional calls into shell internals, and an explicit GNOME version check for GNOME 46/47 instead of probing for properties.
+- The picker cancels its `wwe` calls when it is destroyed.
+
 ## 0.1.2 (2026-10-30)
 
 - Fix: after logging in, the live wallpaper did not appear and the overview lost its workspace view. The extension looked up mutter's surface actor type when it loaded, which at login is before any window exists, and every later attempt to attach the wallpaper failed. The type is now looked up when needed, and an error while attaching can no longer break GNOME's own backgrounds.

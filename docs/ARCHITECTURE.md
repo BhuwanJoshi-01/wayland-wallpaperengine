@@ -5,9 +5,14 @@
 | Path | What |
 |---|---|
 | `bin/wwe` | Python CLI (standard library only; uses `gi` for monitor detection if available). Finds Steam libraries and workshop items, stores the config, picks a backend, and supervises the renderer. |
-| `extension/<uuid>/extension.js` | GNOME Shell extension: renderer window handling, background clones, pausing, shell overrides. |
-| `extension/<uuid>/background-clone.js` | The actors placed inside GNOME's background actors (`CloneHolder`, `CoverClone`). |
+| `extension/<uuid>/extension.js` | GNOME Shell extension entry point: creates the parts below and connects them. |
+| `extension/<uuid>/renderer.js` | Recognising renderer and desktop windows; which surface to clone. |
+| `extension/<uuid>/renderer-tracker.js` | Finds renderer windows and keeps them hidden (one `RendererWindow` per window). |
+| `extension/<uuid>/background-clone.js` | The live copy inside GNOME's background actors (`BackgroundClones`, `CloneHolder`, `CoverClone`). |
+| `extension/<uuid>/overrides.js` | Shell overrides that hide the renderer windows. |
+| `extension/<uuid>/pause.js` | Decides when to pause and asks `wwe run` to do it. |
 | `extension/<uuid>/input.js` | Pointer forwarding and desktop-only audio. |
+| `extension/<uuid>/control-socket.js` | Non-blocking datagrams to `wwe run` and the renderer. |
 | `extension/<uuid>/picker.js` | Top bar wallpaper picker; talks to `wwe` only. |
 | `systemd/wwe.service` | User unit that runs `wwe run` with the graphical session. |
 | `install.sh`, `uninstall.sh` | Per-user install / removal; `install.sh` also bootstraps itself when piped from curl. |
@@ -34,7 +39,7 @@ The extension recognises these windows by `app_id`. For unpatched engine builds 
 1. **Never in the way.** The window is made sticky and lowered (and lowered again when raised). Its actors are made non-reactive so pointer input falls through. It gives keyboard focus back if it gets it. Its actor has opacity 0, which clones ignore.
 2. **First frame.** A window minimized before it ever drew has no buffer, so clones of it stay empty. The window therefore stays mapped (invisible, at the bottom, click-through) until `actor.get_texture().get_preferred_size()` reports content, and only then gets minimized. There is no timeout: a renderer started on the lock screen draws nothing until unlock.
 3. **Fullscreen, but only while minimized.** GNOME keeps resizing and moving a normal window whenever the usable area changes (panels, docks, lock screen). That made video wallpapers jump and leave black bands. Fullscreen windows always get the whole monitor, and a *minimized* fullscreen window does not count for `get_monitor_in_fullscreen`, so panels stay visible. The window is only made fullscreen after it is minimized, and fullscreen is removed again before it is ever shown.
-4. **Hidden from the shell.** Several entry points filter renderer windows out:
+4. **Hidden from the shell.** Several entry points filter renderer windows out (`overrides.js`):
    - `Shell.Global.get_window_actors`, `Meta.Display.get_tab_list`
    - `Workspace._isOverviewWindow`, `WorkspaceThumbnail._isOverviewWindow` (the latter receives window actors)
    - `Shell.WindowTracker.get_window_app`, `Shell.App.get_windows/get_n_windows`, `Shell.AppSystem.get_running` (docks, dash-to-panel)
@@ -42,7 +47,7 @@ The extension recognises these windows by `app_id`. For unpatched engine builds 
 
 ### Background clones
 
-`BackgroundManager._createBackgroundActor` is wrapped, so every `Meta.BackgroundActor` (desktop, overview workspaces, lock screen, and backgrounds other extensions create) gets a `CloneHolder` child containing a `CoverClone` of the renderer.
+Every `Meta.BackgroundActor` (desktop, overview workspaces, lock screen, and backgrounds other extensions such as blur-my-shell create) gets a `CloneHolder` child containing a `CoverClone` of the renderer. Backgrounds that exist when the extension is enabled are found by walking the stage; later ones arrive through a wrapper around `BackgroundManager._createBackgroundActor`. On disable the holders are destroyed and each background actor gets its own layout manager back.
 
 - The clone's source is the renderer's **main surface actor** (the largest visible `MetaSurfaceActor`), not the window actor. This leaves out what mutter draws around the buffer, e.g. the black backing of fullscreen windows.
 - `CloneHolder` reports a **zero preferred size**. Overview backgrounds size themselves height-for-width to keep the monitor's shape. A child with a real size overrides that and squashes the workspace previews.
@@ -62,17 +67,17 @@ V <0-128>             volume
 
 The extension polls `global.get_pointer()` about 60 times a second while a scene/web renderer is running and not paused, and sends `P` when something changed. A button press counts for the wallpaper only if it started on the desktop: the pick at that point is the background group, the stage, or a desktop window (DING). Audio is unmuted only while the desktop is active (see below). mpv gets the equivalent JSON IPC commands on `$XDG_RUNTIME_DIR/wwe/mpv.sock`.
 
-### Pausing
+### Pausing (`pause.js`)
 
-"Desktop active" means nothing or a desktop window is focused, and neither the overview nor the lock screen is showing. With `pause=focus` (default), renderers are stopped with `SIGSTOP` whenever the desktop is not active. With any setting they are also stopped while another window on the current workspace is fullscreen (except `never`). `SIGCONT` resumes them.
+"Desktop active" means nothing or a desktop window is focused, and neither the overview nor the lock screen is showing. With `pause=focus` (default), renderers are paused whenever the desktop is not active. With any setting except `never` they are also paused while another window on the current workspace is fullscreen. A renderer still waiting for its first frame is never paused. The extension reads the `pause` key from `~/.config/wwe/config.json` through a file monitor.
 
-`wwe run` starts each renderer in its own process group, so the whole group is signalled, including the CEF helpers of web wallpapers. `kill(1)` is run directly through `Gio.Subprocess` (no shell; dash's `kill` rejects `--`), and signals are queued so quick focus changes cannot be delivered out of order. A renderer still waiting for its first frame is never stopped. The extension reads the `pause` key from `~/.config/wwe/config.json` through a file monitor.
+The extension does not signal processes itself. It sends `pause <pid>` or `resume <pid>` (the renderer window's pid) as a datagram to `$XDG_RUNTIME_DIR/wwe/supervisor.sock`. `wwe run` acts only if that pid belongs to the process group of the renderer it started, and then sends `SIGSTOP` or `SIGCONT` to the whole group, including the CEF helpers of web wallpapers. Because the pid has to match, a late message about a renderer that has just been replaced cannot freeze its successor. On disable the extension resumes every renderer it paused.
 
 ## `wwe run` (supervisor)
 
 `wwe run` resolves the wallpaper, builds the renderer command and keeps it running:
 
-- It polls the mtime of the wwe config and of Wallpaper Engine's `config.json` once a second. When the resulting command changes, it restarts the renderer. If only the volume changed, it sends `V` (engine) or an mpv IPC command instead.
+- It polls the mtime of the wwe config and of Wallpaper Engine's `config.json` once a second, and in between waits on `supervisor.sock` for pause messages from the extension. When the resulting command changes, it restarts the renderer. If only the volume changed, it sends `V` (engine) or an mpv IPC command instead.
 - Crashes restart the renderer up to 3 times per minute; after that it waits for a different wallpaper.
 - The audio visualiser input records the speaker monitor, which GNOME shows as microphone use, so `--no-audio-processing` is passed by default. With `audio_processing=auto` it is enabled for wallpapers whose `project.json` has `general.supportsaudioprocessing`; with `true` for all.
 

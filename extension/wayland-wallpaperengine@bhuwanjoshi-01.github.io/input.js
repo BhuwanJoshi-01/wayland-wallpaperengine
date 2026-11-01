@@ -1,16 +1,12 @@
-// Wayland Wallpaper Engine - input and audio bridge
+// Wayland Wallpaper Engine - pointer and audio for the hidden renderer
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The renderer window is hidden, so it never receives pointer events and has
-// no idea whether the desktop is in front. This module tells it:
-//
-//   * pointer position (always, for parallax / cursor effects) and button
-//     state (only for presses that start on the desktop) - sent ~60 times a
-//     second to the patched linux-wallpaperengine over its control socket
-//     (WWE_CONTROL_SOCKET, see patches/0002-external-control-socket.patch)
-//   * mute / unmute: wallpaper audio plays only while the desktop is focused,
-//     like Wallpaper Engine on Windows. linux-wallpaperengine gets "M 0|1" on
-//     the same socket, mpv a JSON IPC command.
+// The renderer window never receives input and cannot tell whether the
+// desktop is in front, so this module tells it:
+//   * the pointer position (parallax, cursor effects) and buttons, for presses
+//     that start on the desktop: "P x y buttons" on engine.sock
+//   * mute while the desktop is not focused: "M 0|1" on engine.sock, or the
+//     mute property over mpv's JSON IPC
 
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
@@ -19,100 +15,65 @@ import Meta from 'gi://Meta';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
-const CONTROL_DIR = GLib.build_filenamev([GLib.get_user_runtime_dir(), 'wwe']);
-const ENGINE_SOCKET = GLib.build_filenamev([CONTROL_DIR, 'engine.sock']);
-const MPV_SOCKET = GLib.build_filenamev([CONTROL_DIR, 'mpv.sock']);
-
-const ENGINE_APP_ID = 'linux-wallpaperengine';
-const MPV_APP_ID = 'wwe-video';
+import {DatagramSender, runtimePath} from './control-socket.js';
+import {ENGINE_APP_ID, VIDEO_APP_ID, desktopActive, isDesktopWindow} from './renderer.js';
 
 const POINTER_POLL_MS = 16;
-// renderers bind their socket during startup; re-send the audio state a few
-// times after one appears in case the first message raced the bind
-const AUDIO_RESYNC_DELAYS_MS = [300, 1500, 4000];
+// a renderer binds its socket during startup: repeat the mute state for a
+// while after one appears, in case the first message came too early
+const AUDIO_RESYNC_INTERVAL_MS = 500;
+const AUDIO_RESYNC_COUNT = 8;
 
 const encoder = new TextEncoder();
 
-// The desktop itself: a DESKTOP-type window, or the window of the Desktop
-// Icons (DING) extension, which cannot set that type on Wayland.
-export function isDesktopWindow(win) {
-    if (!win)
-        return false;
-    if (win.get_window_type() === Meta.WindowType.DESKTOP)
-        return true;
-    return win.get_wm_class() === 'gjs' && (win.get_title() ?? '').startsWith('Desktop Icons');
-}
-
 export class InputBridge {
-    constructor({getRenderers, desktopActive}) {
-        this._getRenderers = getRenderers;
-        this._desktopActive = desktopActive;
-    }
-
-    enable() {
+    constructor(tracker) {
+        this._tracker = tracker;
         this._paused = false;
         this._muted = null;
-        this._pressed = 0;
-        this._pressOnDesktop = false;
-        this._last = null;
+        this._pressedButtons = 0;
+        this._pressStartedOnDesktop = false;
+        this._lastPointerMessage = null;
+        this._knownRenderers = new Set();
         this._pollId = 0;
-        this._resyncIds = new Set();
+        this._resyncId = 0;
+        this._engine = new DatagramSender('engine.sock');
+        this._mpvCancellable = new Gio.Cancellable();
 
-        this._engineAddress = Gio.UnixSocketAddress.new(ENGINE_SOCKET);
-        this._socket = Gio.Socket.new(Gio.SocketFamily.UNIX, Gio.SocketType.DATAGRAM,
-            Gio.SocketProtocol.DEFAULT);
-        // never stall the compositor on a full socket (e.g. renderer SIGSTOPped)
-        this._socket.set_blocking(false);
-
+        const syncAudio = () => this._syncAudio();
         this._signals = [
-            [global.display, global.display.connect('notify::focus-window', () => this._syncAudio())],
-            [Main.overview, Main.overview.connect('showing', () => this._syncAudio())],
-            [Main.overview, Main.overview.connect('hidden', () => this._syncAudio())],
+            [global.display, global.display.connect('notify::focus-window', syncAudio)],
+            [Main.overview, Main.overview.connect('showing', syncAudio)],
+            [Main.overview, Main.overview.connect('hidden', syncAudio)],
             [Main.sessionMode, Main.sessionMode.connect('updated', () => this.update())],
         ];
-
-        this.update();
     }
 
-    disable() {
-        for (const [obj, id] of this._signals)
-            obj.disconnect(id);
-        this._signals = [];
-
+    destroy() {
         this._stopPolling();
-        for (const id of this._resyncIds)
-            GLib.source_remove(id);
-        this._resyncIds.clear();
-
-        this._socket.close();
-        this._socket = null;
+        this._stopAudioResync();
+        for (const [object, id] of this._signals)
+            object.disconnect(id);
+        this._signals = [];
+        this._mpvCancellable.cancel();
+        this._engine.close();
     }
 
-    // renderer added/removed, or session state changed
+    // renderers or session state changed
     update() {
-        const wantPolling = !this._paused && !Main.sessionMode.isLocked && this._engineWindow() !== null;
-        if (wantPolling && !this._pollId) {
-            this._last = null;
-            this._pollId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, POINTER_POLL_MS, () => {
-                this._pollPointer();
-                return GLib.SOURCE_CONTINUE;
-            });
-        } else if (!wantPolling) {
-            this._stopPolling();
-        }
-        this._syncAudio(true);
-    }
+        const renderers = new Set(this._tracker.windows);
+        const added = [...renderers].some(win => !this._knownRenderers.has(win));
+        this._knownRenderers = renderers;
 
-    rendererAdded() {
-        this.update();
-        for (const delay of AUDIO_RESYNC_DELAYS_MS) {
-            const id = GLib.timeout_add(GLib.PRIORITY_DEFAULT, delay, () => {
-                this._resyncIds.delete(id);
-                this._syncAudio(true);
-                return GLib.SOURCE_REMOVE;
-            });
-            this._resyncIds.add(id);
-        }
+        const wantPolling = !this._paused && !Main.sessionMode.isLocked && this._engineWindow() !== null;
+        if (wantPolling && !this._pollId)
+            this._startPolling();
+        else if (!wantPolling)
+            this._stopPolling();
+
+        this._syncAudio(true);
+        if (added)
+            this._startAudioResync();
     }
 
     setPaused(paused) {
@@ -122,22 +83,47 @@ export class InputBridge {
         this.update();
     }
 
+    _engineWindow() {
+        return this._tracker.windows.find(win => win.get_wm_class() === ENGINE_APP_ID) ?? null;
+    }
+
+    _startPolling() {
+        this._stopPolling();
+        this._lastPointerMessage = null;
+        this._pollId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, POINTER_POLL_MS, () => {
+            this._sendPointer();
+            return GLib.SOURCE_CONTINUE;
+        });
+    }
+
     _stopPolling() {
         if (this._pollId) {
-            GLib.source_remove(this._pollId);
+            GLib.Source.remove(this._pollId);
             this._pollId = 0;
         }
     }
 
-    _engineWindow() {
-        return this._getRenderers().find(w => w.get_wm_class() === ENGINE_APP_ID) ?? null;
+    _startAudioResync() {
+        this._stopAudioResync();
+        let remaining = AUDIO_RESYNC_COUNT;
+        this._resyncId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, AUDIO_RESYNC_INTERVAL_MS, () => {
+            this._syncAudio(true);
+            remaining--;
+            if (remaining > 0)
+                return GLib.SOURCE_CONTINUE;
+            this._resyncId = 0;
+            return GLib.SOURCE_REMOVE;
+        });
     }
 
-    // ------------------------------------------------------------------
-    // pointer
-    // ------------------------------------------------------------------
+    _stopAudioResync() {
+        if (this._resyncId) {
+            GLib.Source.remove(this._resyncId);
+            this._resyncId = 0;
+        }
+    }
 
-    _pollPointer() {
+    _sendPointer() {
         const win = this._engineWindow();
         if (!win)
             return;
@@ -147,19 +133,19 @@ export class InputBridge {
             (mods & Clutter.ModifierType.BUTTON1_MASK ? 1 : 0) |
             (mods & Clutter.ModifierType.BUTTON3_MASK ? 2 : 0);
 
-        // decide once per press whether it belongs to the wallpaper, so drags
-        // that start on a window never click the wallpaper (and vice versa)
-        if (pressed && !this._pressed)
-            this._pressOnDesktop = this._pointerOnDesktop(x, y);
-        this._pressed = pressed;
-        const buttons = this._pressOnDesktop ? pressed : 0;
+        // decided once per press, so a drag that starts on a window never
+        // clicks the wallpaper, and the other way round
+        if (pressed && !this._pressedButtons)
+            this._pressStartedOnDesktop = this._pointerOnDesktop(x, y);
+        this._pressedButtons = pressed;
+        const buttons = this._pressStartedOnDesktop ? pressed : 0;
 
         const rect = win.get_frame_rect();
         const message = `P ${x - rect.x} ${y - rect.y} ${buttons}`;
-        if (message === this._last)
+        if (message === this._lastPointerMessage)
             return;
-        this._last = message;
-        this._sendEngine(message);
+        this._lastPointerMessage = message;
+        this._engine.send(message);
     }
 
     _pointerOnDesktop(x, y) {
@@ -167,55 +153,37 @@ export class InputBridge {
         for (let a = actor; a; a = a.get_parent()) {
             if (a instanceof Meta.WindowActor)
                 return isDesktopWindow(a.meta_window);
-            if (a === Main.layoutManager._backgroundGroup)
+            if (a instanceof Meta.BackgroundGroup)
                 return true;
         }
         return actor === global.stage;
     }
 
-    // ------------------------------------------------------------------
-    // audio
-    // ------------------------------------------------------------------
-
     _syncAudio(force = false) {
-        if (!this._socket)
-            return;
-        const muted = !this._desktopActive();
+        const muted = !desktopActive();
         if (!force && muted === this._muted)
             return;
         this._muted = muted;
 
-        for (const win of this._getRenderers()) {
+        for (const win of this._tracker.windows) {
             const appId = win.get_wm_class();
             if (appId === ENGINE_APP_ID)
-                this._sendEngine(`M ${muted ? 1 : 0}`);
-            else if (appId === MPV_APP_ID)
+                this._engine.send(`M ${muted ? 1 : 0}`);
+            else if (appId === VIDEO_APP_ID)
                 this._sendMpv(['set_property', 'mute', muted]);
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // transports
-    // ------------------------------------------------------------------
-
-    _sendEngine(text) {
-        try {
-            this._socket.send_to(this._engineAddress, encoder.encode(text), null);
-        } catch {
-            // renderer not listening (yet), or its queue is full
         }
     }
 
     _sendMpv(command) {
         const client = new Gio.SocketClient();
-        client.connect_async(Gio.UnixSocketAddress.new(MPV_SOCKET), null, (c, res) => {
+        const address = Gio.UnixSocketAddress.new(runtimePath('mpv.sock'));
+        client.connect_async(address, this._mpvCancellable, (_client, result) => {
             try {
-                const conn = c.connect_finish(res);
-                conn.get_output_stream().write_all(
-                    encoder.encode(`${JSON.stringify({command})}\n`), null);
-                conn.close(null);
+                const connection = client.connect_finish(result);
+                connection.get_output_stream().write_all(encoder.encode(`${JSON.stringify({command})}\n`), null);
+                connection.close(null);
             } catch {
-                // mpv not listening (yet)
+                // mpv is not listening (yet), or this was cancelled
             }
         });
     }

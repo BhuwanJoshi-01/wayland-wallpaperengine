@@ -1,11 +1,10 @@
 // Wayland Wallpaper Engine - top bar wallpaper picker
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Wallpaper Engine's own window runs under Proton, but it can never apply a
-// wallpaper there (it neither loads nor saves the selection), so this menu is
-// the picker: thumbnails of every subscribed workshop item, search, volume,
-// random, and a switch to follow the WE app instead. All state lives in the
-// wwe config; this menu only runs `wwe` and the supervisor applies changes.
+// Wallpaper Engine's own app runs under Proton and cannot apply wallpapers
+// there, so this menu is the picker: thumbnails of every subscribed workshop
+// item, search, volume, pausing, random, and a switch to follow the app.
+// All state lives in the wwe config.
 
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
@@ -14,6 +13,8 @@ import GObject from 'gi://GObject';
 import Pango from 'gi://Pango';
 import St from 'gi://St';
 
+import * as Config from 'resource:///org/gnome/shell/misc/config.js';
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import {Slider} from 'resource:///org/gnome/shell/ui/slider.js';
@@ -25,12 +26,19 @@ const GRID_HEIGHT = 440;
 const VOLUME_DEBOUNCE_MS = 250;
 const WORKSHOP_URI = 'steam://url/SteamWorkshopPage/431960';
 
+// St.BoxLayout's "vertical" property became "orientation" in GNOME 48
+const VERTICAL = parseInt(Config.PACKAGE_VERSION, 10) >= 48
+    ? {orientation: Clutter.Orientation.VERTICAL}
+    : {vertical: true};
+
 function wweBinary() {
     return GLib.find_program_in_path('wwe') ??
         GLib.build_filenamev([GLib.get_home_dir(), '.local', 'bin', 'wwe']);
 }
 
-function runWwe(args) {
+// wwe does the actual work (scanning the workshop, changing the config); the
+// running `wwe run` applies changes by itself.
+function runWwe(args, cancellable) {
     return new Promise((resolve, reject) => {
         let proc;
         try {
@@ -40,7 +48,7 @@ function runWwe(args) {
             reject(e);
             return;
         }
-        proc.communicate_utf8_async(null, null, (p, res) => {
+        proc.communicate_utf8_async(null, cancellable, (p, res) => {
             try {
                 const [, stdout, stderr] = p.communicate_utf8_finish(res);
                 if (p.get_successful())
@@ -54,17 +62,7 @@ function runWwe(args) {
     });
 }
 
-// St.BoxLayout got "orientation" in GNOME 48; older versions use "vertical"
-function verticalBox(params) {
-    const box = new St.BoxLayout(params);
-    if ('orientation' in box)
-        box.orientation = Clutter.Orientation.VERTICAL;
-    else
-        box.vertical = true;
-    return box;
-}
-
-function logError(e) {
+function logFailure(e) {
     console.error(`[wayland-wallpaperengine] ${e.message}`);
 }
 
@@ -81,8 +79,8 @@ class WallpaperMenu extends PanelMenu.Button {
         this._state = {};
         this._volumeTimeoutId = 0;
         this._syncingUi = false;
+        this._cancellable = new Gio.Cancellable();
 
-        // header: what is showing, and where it comes from
         this._header = new PopupMenu.PopupMenuItem('', {reactive: false, style_class: 'wwe-header'});
         this._header.label.clutter_text.ellipsize = Pango.EllipsizeMode.END;
         this.menu.addMenuItem(this._header);
@@ -106,7 +104,7 @@ class WallpaperMenu extends PanelMenu.Button {
             overlay_scrollbars: true,
             x_expand: true,
         });
-        this._grid = verticalBox({style_class: 'wwe-grid'});
+        this._grid = new St.BoxLayout({...VERTICAL, style_class: 'wwe-grid'});
         this._scroll.set_child(this._grid);
         gridItem.add_child(this._scroll);
         this.menu.addMenuItem(gridItem);
@@ -125,19 +123,19 @@ class WallpaperMenu extends PanelMenu.Button {
         this._pauseOnFocus = new PopupMenu.PopupSwitchMenuItem('Pause when an app is focused', true);
         this._pauseOnFocus.connect('toggled', (_item, state) => {
             if (!this._syncingUi)
-                runWwe(['config', `pause=${state ? 'focus' : 'fullscreen'}`]).catch(logError);
+                this._run(['config', `pause=${state ? 'focus' : 'fullscreen'}`]);
         });
         this.menu.addMenuItem(this._pauseOnFocus);
 
         this._follow = new PopupMenu.PopupSwitchMenuItem('Follow the Wallpaper Engine app', false);
         this._follow.connect('toggled', (_item, state) => {
             if (!this._syncingUi)
-                runWwe(state ? ['sync'] : ['sync', '--off']).then(() => this._refresh()).catch(logError);
+                this._run(state ? ['sync'] : ['sync', '--off']).then(() => this._refresh());
         });
         this.menu.addMenuItem(this._follow);
 
         this.menu.addAction('Random wallpaper', () => {
-            runWwe(['random']).then(() => this._refresh()).catch(logError);
+            this._run(['random']).then(() => this._refresh());
         });
         this.menu.addAction('Browse Steam Workshop', () => {
             Gio.AppInfo.launch_default_for_uri_async(WORKSHOP_URI, null, null, null);
@@ -147,29 +145,58 @@ class WallpaperMenu extends PanelMenu.Button {
             if (open)
                 this._refresh();
         });
+
+        // the extension also runs on the lock screen, for the live background
+        this._sessionId = Main.sessionMode.connect('updated', () => this._syncVisibility());
+        this._syncVisibility();
     }
 
     destroy() {
         if (this._volumeTimeoutId) {
-            GLib.source_remove(this._volumeTimeoutId);
+            GLib.Source.remove(this._volumeTimeoutId);
             this._volumeTimeoutId = 0;
         }
+        Main.sessionMode.disconnect(this._sessionId);
+        this._cancellable.cancel();
         super.destroy();
+    }
+
+    _syncVisibility() {
+        const allowed = !Main.sessionMode.isLocked && !Main.sessionMode.isGreeter;
+        if (!allowed)
+            this.menu.close();
+        this.visible = allowed;
+    }
+
+    // Resolves to wwe's output, or to null if it failed (the failure is logged).
+    async _run(args) {
+        try {
+            return await runWwe(args, this._cancellable);
+        } catch (e) {
+            if (!this._cancellable.is_cancelled())
+                logFailure(e);
+            return null;
+        }
     }
 
     async _refresh() {
         try {
             const [items, state] = await Promise.all([
-                runWwe(['list', '--json']).then(JSON.parse),
-                runWwe(['state']).then(JSON.parse),
+                runWwe(['list', '--json'], this._cancellable).then(JSON.parse),
+                runWwe(['state'], this._cancellable).then(JSON.parse),
             ]);
             this._items = items;
             this._state = state;
         } catch (e) {
-            this._header.label.text = `wwe is not working: ${e.message}`;
-            logError(e);
+            if (!this._cancellable.is_cancelled()) {
+                this._header.label.text = `wwe is not working: ${e.message}`;
+                logFailure(e);
+            }
             return;
         }
+        // the menu may have been destroyed while wwe was running
+        if (this._cancellable.is_cancelled())
+            return;
 
         const s = this._state;
         const origin = s.source === 'wallpaper-engine' && s.origin === 'wallpaper-engine'
@@ -212,7 +239,7 @@ class WallpaperMenu extends PanelMenu.Button {
 
     _makeTile(item) {
         const current = item.id === this._state.current_id;
-        const box = verticalBox({});
+        const box = new St.BoxLayout({...VERTICAL});
 
         const thumb = new St.Widget({
             style_class: 'wwe-thumb',
@@ -248,7 +275,7 @@ class WallpaperMenu extends PanelMenu.Button {
         });
         button.connect('clicked', () => {
             this.menu.close();
-            runWwe(['set', item.id]).catch(logError);
+            this._run(['set', item.id]);
         });
         return button;
     }
@@ -258,11 +285,11 @@ class WallpaperMenu extends PanelMenu.Button {
         if (this._syncingUi)
             return;
         if (this._volumeTimeoutId)
-            GLib.source_remove(this._volumeTimeoutId);
+            GLib.Source.remove(this._volumeTimeoutId);
         this._volumeTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, VOLUME_DEBOUNCE_MS, () => {
             this._volumeTimeoutId = 0;
             const volume = Math.round(this._volume.value * 100);
-            runWwe(['config', `volume=${volume}`, `silent=${volume === 0}`]).catch(logError);
+            this._run(['config', `volume=${volume}`, `silent=${volume === 0}`]);
             return GLib.SOURCE_REMOVE;
         });
     }

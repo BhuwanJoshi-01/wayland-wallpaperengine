@@ -28,6 +28,10 @@ gnome-extensions info wayland-wallpaperengine@bhuwanjoshi-01.github.io
 
 That is intended while an app is focused (`pause=focus`), while the overview or the lock screen is open, and while a window is fullscreen. Click the desktop and it plays again. Use `wwe config pause=fullscreen` to pause only for fullscreen windows, or `pause=never`.
 
+## The wallpaper keeps playing while I work
+
+Pausing needs a `wwe` from version 0.2.0 or later: the extension asks `wwe run` to pause the renderer. If the extension was updated from extensions.gnome.org but `wwe` was not, run the installer again. `journalctl -b /usr/bin/gnome-shell | grep supervisor.sock` shows a warning in that case. Also check `wwe config` for `pause=never`.
+
 ## GNOME shows the microphone indicator / music-reactive effects do not move
 
 Wallpapers that react to music (Wallpaper Engine marks them with *supports audio processing*) need to record what your **speakers** play, not your microphone. GNOME shows the microphone indicator for any audio capture, so this is **off by default**: those wallpapers still play, but their audio-reactive effects stay still. To turn it on:

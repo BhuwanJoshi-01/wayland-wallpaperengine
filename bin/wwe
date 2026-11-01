@@ -22,7 +22,9 @@ import json
 import os
 import random
 import re
+import select
 import signal
+import socket
 import shutil
 import subprocess
 import sys
@@ -43,6 +45,7 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / APP
 ENGINE_SOCKET = RUNTIME_DIR / "engine.sock"
 MPV_SOCKET = RUNTIME_DIR / "mpv.sock"
+SUPERVISOR_SOCKET = RUNTIME_DIR / "supervisor.sock"
 
 DEFAULT_CONFIG = {
     "source": "wallpaper-engine",  # wallpaper-engine (follow the WE app) | manual
@@ -634,6 +637,7 @@ class Supervisor:
         self.key = None
         self.crashes = []
         self.stopping = False
+        self.control = None
 
     def watched_mtimes(self):
         files = [CONFIG_FILE, we_config_file()]
@@ -651,8 +655,8 @@ class Supervisor:
         print(f"{APP}: backend={self.backend} source={origin} type={item['type']} "
               f"title={item['title']!r}", flush=True)
         print(f"{APP}: exec {' '.join(argv)}", flush=True)
-        # own process group: the GNOME extension SIGSTOPs/SIGCONTs the whole
-        # group (renderer + CEF helpers) while something is fullscreen
+        # own process group, so pausing stops the renderer and its helpers
+        # (CEF processes of web wallpapers) together
         self.child = subprocess.Popen(argv, env=env, start_new_session=True)
 
     def stop_child(self):
@@ -673,6 +677,57 @@ class Supervisor:
     def on_signal(self, signum, _frame):
         self.stopping = True
 
+    def open_control(self):
+        """Datagram socket for the GNOME extension, which decides when the
+        renderer is not visible: "pause <pid>" / "resume <pid>"."""
+        try:
+            SUPERVISOR_SOCKET.unlink(missing_ok=True)
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            sock.bind(str(SUPERVISOR_SOCKET))
+            sock.setblocking(False)
+            self.control = sock
+        except OSError as e:
+            print(f"{APP}: cannot open {SUPERVISOR_SOCKET} ({e}); the wallpaper will not pause",
+                  file=sys.stderr, flush=True)
+
+    def close_control(self):
+        if self.control:
+            self.control.close()
+            self.control = None
+            SUPERVISOR_SOCKET.unlink(missing_ok=True)
+
+    def handle_control(self):
+        while True:
+            try:
+                message = self.control.recv(256).decode(errors="replace").split()
+            except BlockingIOError:
+                return
+            if len(message) == 2 and message[0] in ("pause", "resume") and message[1].isdigit():
+                self.pause(int(message[1]), message[0] == "pause")
+
+    def pause(self, pid, paused):
+        """Stops or continues the renderer, if pid is one of its processes
+        (the renderer window's pid; it may differ from the group leader)."""
+        if not self.child or self.child.poll() is not None:
+            return
+        try:
+            if os.getpgid(pid) != self.child.pid:
+                return
+            os.killpg(self.child.pid, signal.SIGSTOP if paused else signal.SIGCONT)
+        except ProcessLookupError:
+            pass
+
+    def wait(self, seconds):
+        """Sleeps, handling extension messages as they arrive."""
+        if not self.control:
+            time.sleep(seconds)
+            return
+        deadline = time.monotonic() + seconds
+        while not self.stopping and (left := deadline - time.monotonic()) > 0:
+            ready, _, _ = select.select([self.control], [], [], left)
+            if ready:
+                self.handle_control()
+
     @staticmethod
     def without_volume(argv):
         out, skip = [], False
@@ -689,7 +744,6 @@ class Supervisor:
         """Volume-only change: tell the running renderer instead of restarting it."""
         percent = volume_percent(load_config())
         try:
-            import socket
             if Path(self.key[0]).name == "mpv":
                 with socket.socket(socket.AF_UNIX) as s:
                     s.connect(str(MPV_SOCKET))
@@ -706,6 +760,7 @@ class Supervisor:
     def run(self):
         signal.signal(signal.SIGTERM, self.on_signal)
         signal.signal(signal.SIGINT, self.on_signal)
+        self.open_control()
         mtimes = None
         try:
             while not self.stopping:
@@ -739,9 +794,10 @@ class Supervisor:
                     else:
                         print(f"{APP}: renderer keeps crashing; waiting for another wallpaper",
                               file=sys.stderr, flush=True)
-                time.sleep(self.POLL_SECONDS)
+                self.wait(self.POLL_SECONDS)
         finally:
             self.stop_child()
+            self.close_control()
 
 
 def cmd_service(action):

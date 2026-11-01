@@ -110,7 +110,7 @@ On GNOME the wallpaper renderer runs as an ordinary, hidden window. The extensio
  GNOME Shell + extension ──────────────────────┤
    • copies the window into the desktop / overview / lock screen background
    • sends pointer and mute commands (control socket, mpv IPC)
-   • freezes the renderer (SIGSTOP) while you are not on the desktop
+   • asks wwe run to freeze the renderer (SIGSTOP) while you are not on the desktop
    • top bar wallpaper picker
 ```
 

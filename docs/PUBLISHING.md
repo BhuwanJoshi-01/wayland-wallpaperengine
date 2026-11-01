@@ -18,7 +18,7 @@ Publishing the release triggers the `release` workflow, which builds `wayland-wa
 2. Log in at <https://extensions.gnome.org/upload/> and upload it.
 3. Review notes worth mentioning in the upload form:
    - The extension needs the `wwe` tool and linux-wallpaperengine from this repository. It shows nothing on its own, and its description says so.
-   - It spawns `kill(1)` through `Gio.Subprocess` (no shell) to pause and resume its own renderer processes, and runs `wwe` from the picker.
+   - It runs the `wwe` command (no shell) only from the picker, when the user opens it or picks something. Pausing goes through a UNIX datagram socket to `wwe run`, which owns the renderer processes.
    - It overrides some shell methods through `InjectionManager` to hide the renderer window (overview, alt-tab, docks), and restores them in `disable()`.
    - It keeps running in the `unlock-dialog` session mode so the lock screen shows the live background. The picker is hidden there.
 
