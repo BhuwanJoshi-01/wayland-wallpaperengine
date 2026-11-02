@@ -2,6 +2,8 @@
 
 **Your Steam Wallpaper Engine wallpapers as a live desktop background on Linux Wayland, including GNOME.**
 
+![The wallpaper picker open on a GNOME desktop with a live Wallpaper Engine wallpaper: thumbnails of subscribed scene, web and video wallpapers, a volume slider, and the taskbar below.](docs/images/desktop-picker.jpg)
+
 Scene, web and video wallpapers from the Steam Workshop play behind your windows. You can interact with them using the mouse, they play sound while you are on the desktop, and they stop completely while you work or game, so they cost no CPU or GPU then.
 
 [![CI](https://github.com/BhuwanJoshi-01/wayland-wallpaperengine/actions/workflows/ci.yml/badge.svg)](https://github.com/BhuwanJoshi-01/wayland-wallpaperengine/actions/workflows/ci.yml)
