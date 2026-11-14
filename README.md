@@ -22,8 +22,9 @@ curl -fsSL https://raw.githubusercontent.com/BhuwanJoshi-01/wayland-wallpapereng
 - **Scene, web and video wallpapers** from the Steam Workshop. Scene and web wallpapers are rendered by [linux-wallpaperengine](https://github.com/Almamu/linux-wallpaperengine). Videos (workshop items or any `.mp4`/`.webm`/`.mkv`) play through `mpv` with hardware decoding.
 - **Works on GNOME (Wayland).** No existing tool could put these wallpapers on the GNOME desktop, because GNOME has no `wlr-layer-shell`. A small GNOME Shell extension does it here.
 - **Mouse interaction.** Parallax and cursor effects follow your pointer, and clicks on the desktop reach interactive wallpapers. Clicks on windows never do.
-- **Sound on the desktop only.** The wallpaper's audio plays while the desktop is focused and is muted when an app is focused.
+- **Sound on the desktop only.** The wallpaper's audio plays while the desktop is focused and is muted when an app is focused. Click the desktop to hear it again.
 - **Pauses when you are not looking.** When an app is focused, the overview is open, the screen is locked or a game is fullscreen, the renderer is frozen (0 % CPU). Measured on an Intel iGPU: 13 % → 0 % renderer CPU, 22 % → 3 % GNOME Shell CPU, 71 % → 7 % GPU.
+- **Multiple monitors.** While you work on one monitor, a monitor with no windows on it keeps playing the wallpaper, muted. Click its desktop and the sound comes back.
 - **Wallpaper picker** in the top bar: thumbnails of everything you subscribed to, search, volume, random, and a link to the Steam Workshop.
 - **The `wwe` command** for everything else: list, set, random, wallpaper properties, settings, diagnostics.
 - **Wallpaper properties** (colours, toggles, sliders) can be set per wallpaper.
@@ -89,7 +90,7 @@ Logs: `journalctl --user -u wwe -f`
 | `fps` | `30` | frame limit for scene and web wallpapers |
 | `volume` | `50` | 0–100 |
 | `silent` | `false` | mute the wallpaper |
-| `pause` | `focus` | GNOME: `focus` plays only while the desktop is focused; `fullscreen` pauses only for fullscreen windows; `never` |
+| `pause` | `focus` | GNOME: `focus` plays while the desktop is focused, and on monitors without windows; `fullscreen` pauses only for fullscreen windows; `never` |
 | `audio_processing` | `false` | audio visualiser input for wallpapers that react to music. It records what your speakers play, so GNOME shows the microphone indicator meanwhile; off by default. `auto` = only for wallpapers that declare it, `true` = always |
 | `automute` | `false` | also mute while another app plays sound |
 | `disable_mouse` | `false` | no mouse interaction |

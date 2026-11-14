@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0 (2026-11-14)
+
+Better support for several monitors. Only the GNOME extension changed: updating it is enough, `wwe` stays the same.
+
+- A monitor with no windows on it keeps playing the wallpaper while you work on another monitor. Its sound stays muted until you click that desktop. The overview, the lock screen and fullscreen apps (games) still pause every monitor.
+- Clicking the bare desktop now focuses it, so the wallpaper plays with sound. Before, this only worked with the Desktop Icons extension, because GNOME keeps the focus on the last window when you click the background.
+- Fix: parallax and cursor effects on a second monitor got pointer positions from beyond the edge of the wallpaper. The pointer is now mapped through the monitor it is on.
+
 ## 0.2.0 (2026-11-01)
 
 The GNOME extension follows the extensions.gnome.org best practices. Update both parts: run the installer again (the extension alone cannot pause the wallpaper with an older `wwe`).

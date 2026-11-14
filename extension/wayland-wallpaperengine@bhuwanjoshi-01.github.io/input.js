@@ -7,6 +7,7 @@
 //     that start on the desktop: "P x y buttons" on engine.sock
 //   * mute while the desktop is not focused: "M 0|1" on engine.sock, or the
 //     mute property over mpv's JSON IPC
+// A click on the bare desktop focuses it, so the wallpaper plays with sound.
 
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
@@ -25,6 +26,28 @@ const AUDIO_RESYNC_INTERVAL_MS = 500;
 const AUDIO_RESYNC_COUNT = 8;
 
 const encoder = new TextEncoder();
+
+// What an actor that receives pointer input belongs to: 'background' for
+// GNOME's own desktop background, 'window' for a desktop window (Desktop
+// Icons), null for anything else.
+function desktopPart(actor) {
+    for (let a = actor; a; a = a.get_parent()) {
+        if (a instanceof Meta.WindowActor)
+            return isDesktopWindow(a.meta_window) ? 'window' : null;
+        if (a instanceof Meta.BackgroundGroup)
+            return 'background';
+    }
+    return actor === global.stage ? 'background' : null;
+}
+
+function monitorAt(x, y) {
+    for (let i = 0; i < global.display.get_n_monitors(); i++) {
+        const g = global.display.get_monitor_geometry(i);
+        if (x >= g.x && x < g.x + g.width && y >= g.y && y < g.y + g.height)
+            return i;
+    }
+    return -1;
+}
 
 export class InputBridge {
     constructor(tracker) {
@@ -46,6 +69,7 @@ export class InputBridge {
             [Main.overview, Main.overview.connect('showing', syncAudio)],
             [Main.overview, Main.overview.connect('hidden', syncAudio)],
             [Main.sessionMode, Main.sessionMode.connect('updated', () => this.update())],
+            [global.stage, global.stage.connect('captured-event', (_stage, event) => this._onEvent(event))],
         ];
     }
 
@@ -140,23 +164,47 @@ export class InputBridge {
         this._pressedButtons = pressed;
         const buttons = this._pressStartedOnDesktop ? pressed : 0;
 
-        const rect = win.get_frame_rect();
-        const message = `P ${x - rect.x} ${y - rect.y} ${buttons}`;
+        const position = this._rendererPosition(win, x, y);
+        if (!position)
+            return;
+        const message = `P ${position[0]} ${position[1]} ${buttons}`;
         if (message === this._lastPointerMessage)
             return;
         this._lastPointerMessage = message;
         this._engine.send(message);
     }
 
+    // The pointer position in the renderer window. Each monitor shows the
+    // renderer scaled to cover it (background-clone.js), so the position on
+    // the monitor under the pointer is mapped back the same way.
+    _rendererPosition(win, x, y) {
+        const monitor = monitorAt(x, y);
+        if (monitor < 0 || this._tracker.windowFor(monitor) !== win)
+            return null;
+        const geometry = global.display.get_monitor_geometry(monitor);
+        const rect = win.get_frame_rect();
+        if (rect.width <= 0 || rect.height <= 0)
+            return null;
+        const scale = Math.max(geometry.width / rect.width, geometry.height / rect.height);
+        const left = geometry.x + (geometry.width - rect.width * scale) / 2;
+        const top = geometry.y + (geometry.height - rect.height * scale) / 2;
+        return [Math.round((x - left) / scale), Math.round((y - top) / scale)];
+    }
+
     _pointerOnDesktop(x, y) {
-        const actor = global.stage.get_actor_at_pos(Clutter.PickMode.REACTIVE, x, y);
-        for (let a = actor; a; a = a.get_parent()) {
-            if (a instanceof Meta.WindowActor)
-                return isDesktopWindow(a.meta_window);
-            if (a instanceof Meta.BackgroundGroup)
-                return true;
-        }
-        return actor === global.stage;
+        return desktopPart(global.stage.get_actor_at_pos(Clutter.PickMode.REACTIVE, x, y)) !== null;
+    }
+
+    // Clicking the bare desktop focuses it, as on other desktops: the
+    // wallpaper plays, with sound. A desktop window (Desktop Icons) gets
+    // focused by mutter itself.
+    _onEvent(event) {
+        if (event.type() !== Clutter.EventType.BUTTON_PRESS || Main.overview.visible ||
+            Main.sessionMode.isLocked || desktopActive())
+            return Clutter.EVENT_PROPAGATE;
+        if (desktopPart(global.stage.get_event_actor(event)) === 'background')
+            global.display.unset_input_focus(event.get_time());
+        return Clutter.EVENT_PROPAGATE;
     }
 
     _syncAudio(force = false) {

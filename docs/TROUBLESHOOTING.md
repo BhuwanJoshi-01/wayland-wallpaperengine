@@ -26,7 +26,7 @@ gnome-extensions info wayland-wallpaperengine@bhuwanjoshi-01.github.io
 
 ## The wallpaper is frozen
 
-That is intended while an app is focused (`pause=focus`), while the overview or the lock screen is open, and while a window is fullscreen. Click the desktop and it plays again. Use `wwe config pause=fullscreen` to pause only for fullscreen windows, or `pause=never`.
+That is intended while an app is focused (`pause=focus`), while the overview or the lock screen is open, and while a window is fullscreen. Click the desktop and it plays again. With several monitors it keeps playing while at least one monitor has no windows on it, except when a window is fullscreen. Use `wwe config pause=fullscreen` to pause only for fullscreen windows, or `pause=never`.
 
 ## The wallpaper keeps playing while I work
 

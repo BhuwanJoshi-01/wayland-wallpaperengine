@@ -8,6 +8,7 @@
 //   background-clone.js  puts the copy into every background actor
 //   overrides.js         leaves the renderer out of the overview, alt-tab, docks
 //   pause.js             pauses the renderer while nobody looks at it
+//   monitors.js          finds monitors without windows (they keep playing)
 //   input.js             forwards the pointer; audio only on the desktop
 //   picker.js            top bar wallpaper picker
 //

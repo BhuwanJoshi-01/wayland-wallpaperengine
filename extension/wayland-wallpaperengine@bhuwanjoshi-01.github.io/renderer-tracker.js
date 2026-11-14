@@ -165,10 +165,15 @@ export class RendererTracker {
         return this._renderers.get(win)?.ready ?? false;
     }
 
-    // The surface to show on a monitor: that monitor's renderer, else any.
-    contentFor(monitor) {
+    // The renderer shown on a monitor: that monitor's own renderer, else any.
+    windowFor(monitor) {
         const withActor = this.windows.filter(win => win.get_compositor_private());
-        const win = withActor.find(w => w.get_monitor() === monitor) ?? withActor[0];
+        return withActor.find(w => w.get_monitor() === monitor) ?? withActor[0] ?? null;
+    }
+
+    // The surface to show on a monitor.
+    contentFor(monitor) {
+        const win = this.windowFor(monitor);
         return win ? contentActor(win.get_compositor_private()) : null;
     }
 
